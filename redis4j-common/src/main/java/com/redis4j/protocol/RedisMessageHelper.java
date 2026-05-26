@@ -53,7 +53,8 @@ public final class RedisMessageHelper {
             return nullBulkString();
         }
         ByteBuf buf = Unpooled.copiedBuffer(value, StandardCharsets.UTF_8);
-        return new FullBulkStringRedisMessage(buf);
+        // 使用 unreleasableBuffer 防止 buffer 被意外释放
+        return new FullBulkStringRedisMessage(Unpooled.unreleasableBuffer(buf));
     }
 
     /**
@@ -64,7 +65,8 @@ public final class RedisMessageHelper {
             return nullBulkString();
         }
         ByteBuf buf = Unpooled.copiedBuffer(value);
-        return new FullBulkStringRedisMessage(buf);
+        // 使用 unreleasableBuffer 防止 buffer 被意外释放
+        return new FullBulkStringRedisMessage(Unpooled.unreleasableBuffer(buf));
     }
 
     /**

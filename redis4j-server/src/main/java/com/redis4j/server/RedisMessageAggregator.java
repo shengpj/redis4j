@@ -1,21 +1,19 @@
 package com.redis4j.server;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
 import io.netty.handler.codec.redis.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Redis 消息聚合器
  * 将 RedisDecoder 分片输出的消息组合成完整的消息
- *
- * 关键：Redis 协议中 bulk string 的 header 和 content 可能不按顺序到达。
- * 例如：BulkStringHeader -> BulkStringHeader -> Content -> Content
- * 我们需要正确地将 header 和 content 配对。
  */
 public class RedisMessageAggregator extends ChannelDuplexHandler {
 
@@ -25,10 +23,10 @@ public class RedisMessageAggregator extends ChannelDuplexHandler {
     private int expectedArrayLength = -1;
     private List<RedisMessage> arrayElements = null;
 
-    // 待配对的 bulk string header 栈（LIFO，用于配对）
+    // 待配对的 bulk string header 栈
     private final List<BulkStringHeaderRedisMessage> pendingHeaders = new ArrayList<>();
-    // 待配对的 bulk string content 栈（LIFO，用于配对）
-    private final List<ByteBuf> pendingContents = new ArrayList<>();
+    // 待配对的 bulk string content 栈
+    private final List<byte[]> pendingContents = new ArrayList<>();
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
@@ -39,11 +37,15 @@ public class RedisMessageAggregator extends ChannelDuplexHandler {
 
         RedisMessage message = (RedisMessage) msg;
 
-        // 处理 bulk string 内容
+        // 处理 bulk string 内容 - 直接读取字节并保存
         if (msg instanceof DefaultLastBulkStringRedisContent) {
             ByteBuf content = ((DefaultLastBulkStringRedisContent) msg).content();
             if (content != null && content.isReadable()) {
-                pendingContents.add(content.copy());
+                byte[] bytes = new byte[content.readableBytes()];
+                content.getBytes(content.readerIndex(), bytes);
+                pendingContents.add(bytes);
+            } else {
+                pendingContents.add(null);
             }
             checkArrayComplete(ctx);
             return;
@@ -52,16 +54,21 @@ public class RedisMessageAggregator extends ChannelDuplexHandler {
         if (msg instanceof DefaultBulkStringRedisContent) {
             ByteBuf content = ((DefaultBulkStringRedisContent) msg).content();
             if (content != null && content.isReadable()) {
+                byte[] bytes = new byte[content.readableBytes()];
+                content.getBytes(content.readerIndex(), bytes);
+                
                 // 合并到最后一个 pending content
-                ByteBuf last = pendingContents.isEmpty() ? null : pendingContents.get(pendingContents.size() - 1);
-                if (last == null) {
-                    pendingContents.add(content.copy());
+                if (!pendingContents.isEmpty() && pendingContents.get(pendingContents.size() - 1) != null) {
+                    byte[] last = pendingContents.remove(pendingContents.size() - 1);
+                    byte[] combined = new byte[last.length + bytes.length];
+                    System.arraycopy(last, 0, combined, 0, last.length);
+                    System.arraycopy(bytes, 0, combined, last.length, bytes.length);
+                    pendingContents.add(combined);
                 } else {
-                    byte[] combined = new byte[last.readableBytes() + content.readableBytes()];
-                    last.getBytes(last.readerIndex(), combined, 0, last.readableBytes());
-                    content.getBytes(content.readerIndex(), combined, last.readableBytes(), content.readableBytes());
-                    pendingContents.set(pendingContents.size() - 1, ctx.alloc().buffer(combined.length).writeBytes(combined));
+                    pendingContents.add(bytes);
                 }
+            } else {
+                pendingContents.add(null);
             }
             checkArrayComplete(ctx);
             return;
@@ -120,9 +127,11 @@ public class RedisMessageAggregator extends ChannelDuplexHandler {
             if (header.isNull()) {
                 this.arrayElements.add(FullBulkStringRedisMessage.NULL_INSTANCE);
             } else if (!this.pendingContents.isEmpty()) {
-                ByteBuf content = this.pendingContents.remove(pendingContents.size() - 1);
-                if (content != null && content.isReadable()) {
-                    this.arrayElements.add(new FullBulkStringRedisMessage(content));
+                byte[] bytes = this.pendingContents.remove(pendingContents.size() - 1);
+                if (bytes != null && bytes.length > 0) {
+                    // 创建新的 ByteBuf 并持有它
+                    ByteBuf buf = Unpooled.wrappedBuffer(bytes);
+                    this.arrayElements.add(new FullBulkStringRedisMessage(buf));
                 } else {
                     this.arrayElements.add(FullBulkStringRedisMessage.NULL_INSTANCE);
                 }
