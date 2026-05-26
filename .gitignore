@@ -1,0 +1,4 @@
+# Project exclude paths
+/redis4j-client/target/
+/redis4j-common/target/
+/redis4j-server/target/
