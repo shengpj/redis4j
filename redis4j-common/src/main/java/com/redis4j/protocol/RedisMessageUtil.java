@@ -4,7 +4,6 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.redis.*;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -66,38 +65,4 @@ public final class RedisMessageUtil {
         return msg;
     }
 
-    /**
-     * 从 RedisMessage 提取字符串
-     */
-    public static String extractString(RedisMessage msg) {
-        if (msg == null) {
-            return null;
-        }
-
-        if (msg instanceof FullBulkStringRedisMessage) {
-            FullBulkStringRedisMessage bulk = (FullBulkStringRedisMessage) msg;
-            if (bulk.isNull()) {
-                return null;
-            }
-            ByteBuf buf = bulk.content();
-            if (buf == null || !buf.isReadable()) {
-                return "";
-            }
-            return buf.toString(StandardCharsets.UTF_8);
-        }
-
-        if (msg instanceof SimpleStringRedisMessage) {
-            return ((SimpleStringRedisMessage) msg).content();
-        }
-
-        if (msg instanceof ErrorRedisMessage) {
-            return ((ErrorRedisMessage) msg).content();
-        }
-
-        if (msg instanceof IntegerRedisMessage) {
-            return String.valueOf(((IntegerRedisMessage) msg).value());
-        }
-
-        return msg.toString();
-    }
 }

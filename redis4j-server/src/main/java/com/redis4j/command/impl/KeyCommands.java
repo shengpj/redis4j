@@ -100,7 +100,7 @@ public class KeyCommands {
 
         @Override
         protected RedisMessage doExecute(String[] args) {
-            long seconds = Long.parseLong(args[1]);
+            long seconds = parseLong(args[1]);
             boolean result = dataStore.expire(args[0], seconds);
             return RedisMessageHelper.integer(result ? 1 : 0);
         }
@@ -128,7 +128,7 @@ public class KeyCommands {
 
         @Override
         protected RedisMessage doExecute(String[] args) {
-            long timestamp = Long.parseLong(args[1]);
+            long timestamp = parseLong(args[1]);
             long now = System.currentTimeMillis() / 1000;
             long seconds = timestamp - now;
             if (seconds <= 0) {

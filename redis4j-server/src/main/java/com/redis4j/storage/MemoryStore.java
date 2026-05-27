@@ -89,19 +89,20 @@ public class MemoryStore implements DataStore {
     public long incrBy(String key, long delta) {
         Entry entry = store.compute(key, (k, existing) -> {
             if (existing == null || existing.isExpired()) {
-                RedisString newValue = new RedisString(String.valueOf(delta));
-                return new Entry(newValue);
+                return new Entry(new RedisString(String.valueOf(delta)));
             }
             RedisValue value = existing.getValue();
             if (value instanceof RedisString) {
                 long current = Long.parseLong(((RedisString) value).getStringValue());
-                RedisString newValue = new RedisString(String.valueOf(current + delta));
-                return new Entry(newValue, existing.getExpireAt());
+                return new Entry(new RedisString(String.valueOf(current + delta)), existing.getExpireAt());
             }
-            throw new IllegalStateException("Value is not a string");
+            throw new IllegalStateException("WRONGTYPE Value is not a string");
         });
-        expiryIndex.remove(key, entry.getExpireAt());
-        return Long.parseLong(((RedisString) store.get(key).getValue()).getStringValue());
+        // 如果新 entry 无过期时间，清理可能的过期索引（之前在 expired key 上操作时残留）
+        if (entry.isPersistent()) {
+            expiryIndex.remove(key);
+        }
+        return Long.parseLong(((RedisString) entry.getValue()).getStringValue());
     }
 
     @Override
@@ -124,20 +125,19 @@ public class MemoryStore implements DataStore {
     public long append(String key, String value) {
         Entry entry = store.compute(key, (k, existing) -> {
             if (existing == null || existing.isExpired()) {
-                RedisString newValue = new RedisString(value);
-                return new Entry(newValue);
+                return new Entry(new RedisString(value));
             }
             RedisValue rv = existing.getValue();
             if (rv instanceof RedisString) {
                 String newStr = ((RedisString) rv).getStringValue() + value;
-                RedisString newValue = new RedisString(newStr);
-                return new Entry(newValue, existing.getExpireAt());
+                return new Entry(new RedisString(newStr), existing.getExpireAt());
             }
-            throw new IllegalStateException("Value is not a string");
+            throw new IllegalStateException("WRONGTYPE Value is not a string");
         });
-        expiryIndex.remove(key, entry.getExpireAt());
-        RedisString rv = (RedisString) store.get(key).getValue();
-        return rv.getStringValue().length();
+        if (entry.isPersistent()) {
+            expiryIndex.remove(key);
+        }
+        return ((RedisString) entry.getValue()).getStringValue().length();
     }
 
     // ==================== Key 操作 ====================
@@ -195,7 +195,8 @@ public class MemoryStore implements DataStore {
 
     @Override
     public long ttl(String key) {
-        return pttl(key) / 1000;
+        long result = pttl(key);
+        return result >= 0 ? result / 1000 : result;
     }
 
     @Override
@@ -205,6 +206,9 @@ public class MemoryStore implements DataStore {
             store.remove(key, entry);
             expiryIndex.remove(key);
             return -2;
+        }
+        if (entry.isPersistent()) {
+            return -1;
         }
         long remaining = entry.getExpireAt() - System.currentTimeMillis();
         if (remaining <= 0) {
@@ -580,34 +584,42 @@ public class MemoryStore implements DataStore {
 
     @Override
     public boolean sMove(String srcKey, String destKey, String member) {
-        Entry srcEntry = store.get(srcKey);
-        if (srcEntry == null || srcEntry.isExpired() || !(srcEntry.getValue() instanceof RedisSet)) {
-            return false;
-        }
+        // 原子地从源集合中移除
+        boolean[] moved = {false};
+        store.computeIfPresent(srcKey, (k, entry) -> {
+            if (entry == null || entry.isExpired() || !(entry.getValue() instanceof RedisSet set)) {
+                return entry;
+            }
+            if (!set.getSet().contains(member)) {
+                return entry;
+            }
+            RedisSet newSet = new RedisSet(set.getSet());
+            newSet.remove(member);
+            moved[0] = true;
 
-        RedisSet srcSet = (RedisSet) srcEntry.getValue();
-        if (!srcSet.contains(member)) {
-            return false;
-        }
+            if (newSet.isEmpty()) {
+                expiryIndex.remove(k);
+                return null;
+            }
+            return new Entry(newSet, entry.getExpireAt());
+        });
 
-        srcSet.remove(member);
-        if (srcSet.isEmpty()) {
-            store.remove(srcKey);
-        }
+        if (!moved[0]) return false;
 
-        Entry destEntry = store.get(destKey);
-        RedisSet destSet;
-        if (destEntry == null || destEntry.isExpired()) {
-            destSet = new RedisSet();
-            long expireAt = destEntry != null ? destEntry.getExpireAt() : -1;
-            store.put(destKey, new Entry(destSet, expireAt));
-        } else if (destEntry.getValue() instanceof RedisSet) {
-            destSet = (RedisSet) destEntry.getValue();
-        } else {
-            return false;
-        }
+        // 原子地添加到目标集合
+        store.compute(destKey, (k, entry) -> {
+            if (entry == null || entry.isExpired()) {
+                RedisSet newSet = new RedisSet();
+                newSet.add(member);
+                return new Entry(newSet);
+            }
+            if (!(entry.getValue() instanceof RedisSet destSet)) return entry;
 
-        destSet.add(member);
+            RedisSet newSet = new RedisSet(destSet.getSet());
+            newSet.add(member);
+            return new Entry(newSet, entry.getExpireAt());
+        });
+
         return true;
     }
 
@@ -670,6 +682,11 @@ public class MemoryStore implements DataStore {
         expiryIndex.clear();
     }
 
+    @Override
+    public Set<String> getAllKeys() {
+        return new HashSet<>(store.keySet());
+    }
+
     // ==================== 内部方法 ====================
 
     /**
@@ -678,9 +695,13 @@ public class MemoryStore implements DataStore {
     private void cleanupExpiredKeys() {
         long now = System.currentTimeMillis();
         for (Map.Entry<String, Long> entry : expiryIndex.entrySet()) {
-            if (entry.getValue() < now) {
-                store.remove(entry.getKey());
-                expiryIndex.remove(entry.getKey());
+            Long expireAt = entry.getValue();
+            if (expireAt != null && expireAt < now) {
+                // 原子删除：只有过期时间未变时才清理，避免误删被刷新过过期时间的 key
+                String key = entry.getKey();
+                if (expiryIndex.remove(key, expireAt)) {
+                    store.remove(key);
+                }
             }
         }
     }

@@ -130,7 +130,7 @@ public class StringCommands {
         @Override
         protected RedisMessage doExecute(String[] args) {
             String key = args[0];
-            long seconds = Long.parseLong(args[1]);
+            long seconds = parseLong(args[1]);
             String value = args[2];
             dataStore.setEx(key, value, seconds);
             return RedisMessageHelper.ok();
@@ -271,7 +271,7 @@ public class StringCommands {
 
         @Override
         protected RedisMessage doExecute(String[] args) {
-            long delta = Long.parseLong(args[1]);
+            long delta = parseLong(args[1]);
             long result = dataStore.incrBy(args[0], delta);
             return RedisMessageHelper.integer(result);
         }
@@ -326,7 +326,7 @@ public class StringCommands {
 
         @Override
         protected RedisMessage doExecute(String[] args) {
-            long delta = Long.parseLong(args[1]);
+            long delta = parseLong(args[1]);
             long result = dataStore.decrBy(args[0], delta);
             return RedisMessageHelper.integer(result);
         }

@@ -746,6 +746,16 @@ public class PartitionedMemoryStore implements DataStore {
         }
     }
 
+    @Override
+    public Set<String> getAllKeys() {
+        cleanupExpiredKeys();
+        Set<String> keys = new HashSet<>();
+        for (Partition p : partitions) {
+            keys.addAll(p.store.keySet());
+        }
+        return keys;
+    }
+
     // ==================== 内部方法 ====================
 
     private void cleanupExpiredKeys() {

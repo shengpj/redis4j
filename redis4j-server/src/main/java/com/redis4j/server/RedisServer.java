@@ -1,6 +1,8 @@
 package com.redis4j.server;
 
 import com.redis4j.command.CommandRegistry;
+import com.redis4j.command.impl.ServerCommands;
+import com.redis4j.persistence.PersistenceManager;
 import com.redis4j.storage.DataStore;
 import com.redis4j.storage.DataStoreFactory;
 import com.redis4j.storage.StorageType;
@@ -31,6 +33,7 @@ public class RedisServer {
     private final ServerConfig config;
     private final DataStore dataStore;
     private final CommandRegistry commandRegistry;
+    private final PersistenceManager persistenceManager;
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -45,6 +48,7 @@ public class RedisServer {
         this.config = config;
         this.dataStore = DataStoreFactory.create(config.getDataStoreType(), config.getPartitions());
         this.commandRegistry = new CommandRegistry(dataStore);
+        this.persistenceManager = new PersistenceManager(dataStore, config.getDataDir());
         logger.info("Using DataStore type: {}", config.getDataStoreType());
     }
 
@@ -52,20 +56,24 @@ public class RedisServer {
         this.config = config;
         this.dataStore = dataStore;
         this.commandRegistry = commandRegistry;
+        this.persistenceManager = new PersistenceManager(dataStore, config.getDataDir());
     }
 
     /**
-     * 启动服务端
+     * 启动服务器
      */
     public void start() throws InterruptedException {
         logger.info("Starting Redis4J server on {}:{}", config.getHost(), config.getPort());
+
+        // 启动时加载 RDB 数据
+        persistenceManager.load();
 
         // Boss 线程固定为 1，因为只有一个 ServerSocketChannel 接受连接
         bossGroup = new NioEventLoopGroup(1);
         // Worker 线程用于 I/O 操作
         workerGroup = new NioEventLoopGroup(config.getWorkerThreads());
         // 命令处理线程池，独立于 Netty 线程
-        // 使用有界队列避免无限制堆积
+        // 使用有界队列避免无限制堆叠
         AtomicInteger threadNum = new AtomicInteger(1);
         commandExecutor = new ThreadPoolExecutor(
                 config.getWorkerThreads(),
@@ -76,9 +84,13 @@ public class RedisServer {
                     Thread t = new Thread(r, "redis-cmd-" + threadNum.getAndIncrement());
                     t.setDaemon(true);
                     return t;
-                },
-                (r, executor) -> logger.warn("Command execution rejected, queue is full")
+                }
         );
+
+        // 注册持久化命令
+        commandRegistry.register(new ServerCommands.SaveCommand(persistenceManager));
+        commandRegistry.register(new ServerCommands.BgSaveCommand(persistenceManager));
+        commandRegistry.register(new ServerCommands.LastSaveCommand(persistenceManager));
 
         ServerBootstrap bootstrap = new ServerBootstrap();
         bootstrap.group(bossGroup, workerGroup)
@@ -96,7 +108,7 @@ public class RedisServer {
 
                         // 使用 Netty codec-redis
                         pipeline.addLast(new RedisDecoder());
-                        pipeline.addLast(new RedisMessageAggregator()); // 自定义聚合器：聚合 bulk string 和数组
+                        pipeline.addLast(new RedisMessageAggregator());
                         pipeline.addLast(new RedisEncoder());
                         pipeline.addLast(new NettyCodecHandler(commandRegistry, commandExecutor));
                     }
@@ -108,16 +120,27 @@ public class RedisServer {
         serverChannel = future.channel();
         logger.info("Redis4J server started successfully on port {}", config.getPort());
 
+        // 启动后台定时 RDB 保存
+        persistenceManager.start();
+
         Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown));
 
         serverChannel.closeFuture().sync();
     }
 
     /**
-     * 关闭服务端
+     * 关闭服务器
      */
     public void shutdown() {
         logger.info("Shutting down Redis4J server...");
+
+        // 停止定时任务
+        persistenceManager.stop();
+
+        // 关闭前最后一次保存
+        logger.info("Saving RDB before shutdown...");
+        persistenceManager.save();
+        logger.info("RDB save completed");
 
         if (serverChannel != null) {
             serverChannel.close();
@@ -156,6 +179,10 @@ public class RedisServer {
 
     public CommandRegistry getCommandRegistry() {
         return commandRegistry;
+    }
+
+    public PersistenceManager getPersistenceManager() {
+        return persistenceManager;
     }
 
     public ServerConfig getConfig() {

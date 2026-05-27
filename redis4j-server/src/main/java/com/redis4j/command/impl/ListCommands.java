@@ -185,8 +185,8 @@ public class ListCommands {
         @Override
         protected RedisMessage doExecute(String[] args) {
             String key = args[0];
-            long start = Long.parseLong(args[1]);
-            long stop = Long.parseLong(args[2]);
+            long start = parseLong(args[1]);
+            long stop = parseLong(args[2]);
             String[] values = dataStore.lRange(key, start, stop);
             return RedisMessageHelper.array(Arrays.stream(values)
                     .map(RedisMessageHelper::bulkString)
@@ -216,7 +216,7 @@ public class ListCommands {
 
         @Override
         protected RedisMessage doExecute(String[] args) {
-            long index = Long.parseLong(args[1]);
+            long index = parseLong(args[1]);
             String value = dataStore.lIndex(args[0], index);
             return RedisMessageHelper.bulkString(value);
         }
@@ -244,7 +244,7 @@ public class ListCommands {
 
         @Override
         protected RedisMessage doExecute(String[] args) {
-            long index = Long.parseLong(args[1]);
+            long index = parseLong(args[1]);
             String value = args[2];
             dataStore.lSet(args[0], index, value);
             return RedisMessageHelper.ok();
@@ -273,8 +273,8 @@ public class ListCommands {
 
         @Override
         protected RedisMessage doExecute(String[] args) {
-            long start = Long.parseLong(args[1]);
-            long stop = Long.parseLong(args[2]);
+            long start = parseLong(args[1]);
+            long stop = parseLong(args[2]);
             dataStore.lTrim(args[0], start, stop);
             return RedisMessageHelper.ok();
         }

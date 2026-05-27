@@ -75,6 +75,17 @@ public abstract class AbstractCommand implements Command {
     protected abstract RedisMessage doExecute(String[] args);
 
     /**
+     * 安全地解析长整数，提供 Redis 兼容的错误消息
+     */
+    protected long parseLong(String s) {
+        try {
+            return Long.parseLong(s);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("value is not an integer or out of range");
+        }
+    }
+
+    /**
      * 记录命令执行日志（可选重写）
      */
     protected void logExecution(String[] args, RedisMessage result) {

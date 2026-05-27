@@ -11,7 +11,8 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 
 /**
  * 使用 Netty codec-redis 模块的处理器
@@ -24,139 +25,98 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
     private static final Logger logger = LoggerFactory.getLogger(NettyCodecHandler.class);
 
     private final CommandRegistry commandRegistry;
-    private final ExecutorService commandExecutor;
+    private final ThreadPoolExecutor commandExecutor;
 
-    public NettyCodecHandler(CommandRegistry commandRegistry, ExecutorService commandExecutor) {
+    public NettyCodecHandler(CommandRegistry commandRegistry, ThreadPoolExecutor commandExecutor) {
         this.commandRegistry = commandRegistry;
         this.commandExecutor = commandExecutor;
     }
 
+    private record ParsedCommand(String name, String[] args) {}
+
     @Override
-    public void channelActive(ChannelHandlerContext ctx) throws Exception {
-        logger.debug("Client connected: {}", ctx.channel().remoteAddress());
-        super.channelActive(ctx);
+    protected void channelRead0(ChannelHandlerContext ctx, RedisMessage msg) {
+        ParsedCommand parsed = parseMessage(msg);
+        if (parsed == null) {
+            ctx.writeAndFlush(RedisMessageHelper.error("ERR", "protocol error: expected array"));
+            return;
+        }
+
+        if (parsed.name().isEmpty()) {
+            ctx.writeAndFlush(RedisMessageHelper.error("ERR", "empty command"));
+            return;
+        }
+
+        logger.debug("Executing command: {} {}", parsed.name(), List.of(parsed.args()));
+
+        try {
+            commandExecutor.submit(() -> {
+                try {
+                    RedisMessage response = commandRegistry.execute(parsed.name(), parsed.args());
+                    ctx.writeAndFlush(response);
+                } catch (Exception e) {
+                    logger.error("Error processing command", e);
+                    ctx.writeAndFlush(RedisMessageHelper.error("ERR", e.getMessage()));
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            ctx.writeAndFlush(RedisMessageHelper.error("ERR", "server is busy, try again later"));
+        }
     }
 
-    @Override
-    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-        logger.debug("Client disconnected: {}", ctx.channel().remoteAddress());
-        super.channelInactive(ctx);
-    }
-
-    @Override
-    protected void channelRead0(ChannelHandlerContext ctx, RedisMessage msg) throws Exception {
-        System.err.println(">>> [NettyCodecHandler] Received: " + msg.getClass().getSimpleName());
-
-        // 处理 ArrayRedisMessage（由聚合器输出）
-        if (msg instanceof ArrayRedisMessage) {
-            ArrayRedisMessage array = (ArrayRedisMessage) msg;
-            if (array.isNull()) {
-                ctx.writeAndFlush(RedisMessageHelper.error("ERR", "empty command"));
-                return;
-            }
-
+    /**
+     * 将 RedisMessage 解析为 (命令名, 参数列表)
+     */
+    private ParsedCommand parseMessage(RedisMessage msg) {
+        if (msg instanceof ArrayRedisMessage array) {
+            if (array.isNull()) return null;
             List<RedisMessage> children = array.children();
-            System.err.println(">>> [NettyCodecHandler] Array children count: " + children.size());
-            for (int i = 0; i < children.size(); i++) {
-                RedisMessage child = children.get(i);
-                System.err.println(">>> [NettyCodecHandler] children[" + i + "] = " + child.getClass().getSimpleName() + " -> " + child);
-            }
+            if (children.isEmpty()) return new ParsedCommand("", new String[0]);
 
-            if (children.isEmpty()) {
-                ctx.writeAndFlush(RedisMessageHelper.error("ERR", "empty command"));
-                return;
-            }
-
-            // 解析命令
-            RedisMessage cmdMsg = children.get(0);
-            String command = extractString(cmdMsg).toUpperCase();
-
-            // 提取参数
+            String command = extractString(children.get(0)).toUpperCase();
             String[] parameters = new String[children.size() - 1];
             for (int i = 1; i < children.size(); i++) {
                 parameters[i - 1] = extractString(children.get(i));
             }
-
-            logger.debug("Executing command: {} {}", command, List.of(parameters));
-
-            // 提交到线程池处理
-            final String cmd = command;
-            final String[] params = parameters;
-            commandExecutor.submit(() -> {
-                try {
-                    RedisMessage response = commandRegistry.execute(cmd, params);
-                    ctx.writeAndFlush(response);
-                } catch (Exception e) {
-                    logger.error("Error processing command", e);
-                    ctx.writeAndFlush(RedisMessageHelper.error("ERR", e.getMessage()));
-                }
-            });
-            return;
+            return new ParsedCommand(command, parameters);
         }
 
-        // 处理直接的 BulkString（用于 PING 等简单命令）
-        if (msg instanceof FullBulkStringRedisMessage) {
-            FullBulkStringRedisMessage bulk = (FullBulkStringRedisMessage) msg;
-            if (bulk.isNull()) {
-                ctx.writeAndFlush(RedisMessageHelper.error("ERR", "empty command"));
-                return;
-            }
-
+        if (msg instanceof FullBulkStringRedisMessage bulk) {
+            if (bulk.isNull()) return null;
             ByteBuf buf = bulk.content();
-            if (buf == null || !buf.isReadable()) {
-                ctx.writeAndFlush(RedisMessageHelper.error("ERR", "empty command"));
-                return;
-            }
+            if (buf == null || !buf.isReadable()) return new ParsedCommand("", new String[0]);
 
             String command = buf.toString(StandardCharsets.UTF_8).toUpperCase();
-            logger.debug("Executing command: {}", command);
-
-            final String cmd = command;
-            commandExecutor.submit(() -> {
-                try {
-                    RedisMessage response = commandRegistry.execute(cmd, new String[0]);
-                    ctx.writeAndFlush(response);
-                } catch (Exception e) {
-                    logger.error("Error processing command", e);
-                    ctx.writeAndFlush(RedisMessageHelper.error("ERR", e.getMessage()));
-                }
-            });
-            return;
+            return new ParsedCommand(command, new String[0]);
         }
 
-        logger.warn("Received unexpected message type: {}", msg.getClass().getSimpleName());
-        ctx.writeAndFlush(RedisMessageHelper.error("ERR", "protocol error: expected array"));
+        return null;
     }
 
     private String extractString(RedisMessage msg) {
         if (msg == null) {
             return "";
         }
-        if (msg instanceof FullBulkStringRedisMessage) {
-            FullBulkStringRedisMessage bulk = (FullBulkStringRedisMessage) msg;
-            if (bulk.isNull()) {
-                return "";
-            }
+        if (msg instanceof FullBulkStringRedisMessage bulk) {
+            if (bulk.isNull()) return "";
             ByteBuf buf = bulk.content();
-            if (buf == null || !buf.isReadable()) {
-                return "";
-            }
+            if (buf == null || !buf.isReadable()) return "";
             return buf.toString(StandardCharsets.UTF_8);
         }
-        if (msg instanceof SimpleStringRedisMessage) {
-            return ((SimpleStringRedisMessage) msg).content();
+        if (msg instanceof SimpleStringRedisMessage s) {
+            return s.content();
         }
-        if (msg instanceof ErrorRedisMessage) {
-            return ((ErrorRedisMessage) msg).content();
+        if (msg instanceof ErrorRedisMessage err) {
+            return err.content();
         }
-        if (msg instanceof IntegerRedisMessage) {
-            return String.valueOf(((IntegerRedisMessage) msg).value());
+        if (msg instanceof IntegerRedisMessage i) {
+            return String.valueOf(i.value());
         }
         return "";
     }
 
     @Override
-    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         logger.error("Exception in NettyCodecHandler", cause);
         ctx.close();
     }

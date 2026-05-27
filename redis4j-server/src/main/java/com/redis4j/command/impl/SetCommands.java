@@ -350,7 +350,7 @@ public class SetCommands {
         protected RedisMessage doExecute(String[] args) {
             String key = args[0];
             if (args.length >= 2) {
-                long count = Long.parseLong(args[1]);
+                long count = parseLong(args[1]);
                 String[] members = dataStore.sRandMember(key, count);
                 return RedisMessageHelper.array(Arrays.stream(members)
                         .map(RedisMessageHelper::bulkString)

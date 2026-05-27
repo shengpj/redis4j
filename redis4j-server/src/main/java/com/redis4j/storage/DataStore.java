@@ -323,4 +323,11 @@ public interface DataStore {
      * 关闭存储（用于清理资源）
      */
     void close();
+
+    // ==================== 内部 / 持久化用 ====================
+
+    /**
+     * 获取所有 key（用于 RDB 持久化遍历，跳过已过期的 key）
+     */
+    Set<String> getAllKeys();
 }

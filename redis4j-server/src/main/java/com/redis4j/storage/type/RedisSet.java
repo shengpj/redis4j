@@ -7,7 +7,7 @@ import java.util.*;
 /**
  * Set 类型值
  */
-public class RedisSet implements RedisValue {
+public class RedisSet implements RedisValue, Iterable<String> {
 
     private final Set<String> set;
 

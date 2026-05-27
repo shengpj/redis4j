@@ -1,24 +1,49 @@
 package com.redis4j.persistence;
 
 import com.redis4j.storage.DataStore;
+import com.redis4j.storage.DataType;
+import com.redis4j.storage.Entry;
+import com.redis4j.storage.type.RedisHash;
+import com.redis4j.storage.type.RedisList;
+import com.redis4j.storage.type.RedisSet;
+import com.redis4j.storage.type.RedisString;
+import com.redis4j.storage.type.RedisValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * RDB 文件写入器
+ * 格式（无歧义）：
+ *   HEADER(9) VERSION(4)
+ *   SELECTDB(1) DB_NUM(4)
+ *   [ENTRY]...
+ *   EOF(1) CHECKSUM(4)
+ *
+ * ENTRY 格式：
+ *   MARKER(1=0xC0) KEY_LEN(4) KEY_BYTES EXPIRE_FLAG(1) [EXPIRE_MS(8)] TYPE(1) VALUE...
+ *
+ * TYPE 格式：
+ *   0x00 = String:  VAL_LEN(4) VAL_BYTES
+ *   0x01 = List:     COUNT(4) [VAL_LEN(4) VAL_BYTES]...
+ *   0x02 = Set:      COUNT(4) [VAL_LEN(4) VAL_BYTES]...
+ *   0x04 = Hash:     COUNT(4) [FLD_LEN(4) FLD_BYTES VAL_LEN(4) VAL_BYTES]...
  */
 public class RDBWriter {
 
     private static final Logger logger = LoggerFactory.getLogger(RDBWriter.class);
 
     private static final byte[] RDB_HEADER = "REDIS0011".getBytes();
-    private static final byte[] EOF_MARK = new byte[40];
+    private static final byte ENTRY_MARKER = (byte) 0xC0;
+    private static final byte TYPE_STRING = 0x00;
+    private static final byte TYPE_LIST = 0x01;
+    private static final byte TYPE_SET = 0x02;
+    private static final byte TYPE_HASH = 0x04;
 
-    /**
-     * 将数据存储写入 RDB 文件
-     */
     public void save(DataStore dataStore, String filePath) throws IOException {
         logger.info("Saving RDB file to {}", filePath);
 
@@ -28,61 +53,138 @@ public class RDBWriter {
             parent.mkdirs();
         }
 
+        long start = System.currentTimeMillis();
+
         try (FileOutputStream fos = new FileOutputStream(file);
              BufferedOutputStream bos = new BufferedOutputStream(fos)) {
 
-            // 写入 RDB 头
             bos.write(RDB_HEADER);
+            writeInt32(bos, 9);
 
-            // 写入数据库选择器（数据库 0）
-            bos.write(0xFF); // SELECTDB
-            bos.write(("0".length()));
-            bos.write(String.valueOf(0).getBytes());
-            bos.write(0xFE); // EOF SELECTDB
+            bos.write(0xFE);
+            writeInt32(bos, 0);
 
-            // 写入 key-value 数据
             writeKeyValues(dataStore, bos);
 
-            // 写入 EOF 标记
-            bos.write(EOF_MARK);
-
+            bos.write(0xFF);
+            writeInt32(bos, 0);
             bos.flush();
         }
 
-        logger.info("RDB file saved successfully");
+        long elapsed = System.currentTimeMillis() - start;
+        logger.info("RDB file saved successfully in {} ms: {}", elapsed, filePath);
     }
 
-    /**
-     * 写入 key-value 数据
-     */
     private void writeKeyValues(DataStore dataStore, OutputStream out) throws IOException {
-        // 注意：这里需要 DataStore 提供遍历所有 key 的方法
-        // 由于当前 DataStore 接口没有提供完整遍历，我们简化处理
-        // 实际实现中应该遍历所有 key 并根据类型写入
+        Set<String> keys = dataStore.getAllKeys();
+        int count = 0;
+        for (String key : keys) {
+            Entry entry = createLiveEntry(dataStore, key);
+            if (entry == null || entry.isExpired()) continue;
 
-        // 写入数据库大小信息（用于快速恢复）
-        // 格式: DBSIZE <db_size>
-        long dbSize = dataStore.dbSize();
-        writeString(out, "dbsize:" + dbSize);
+            out.write(ENTRY_MARKER);
+            writeString(out, key);
+            boolean hasExpire = entry.getExpireAt() > 0;
+            out.write(hasExpire ? (byte) 0x01 : (byte) 0x00);
+            if (hasExpire) {
+                writeInt64(out, entry.getExpireAt());
+            }
+            writeValue(out, entry.getValue());
+            count++;
+        }
+        logger.debug("Wrote {} key-value pairs to RDB", count);
     }
 
-    /**
-     * 写入字符串
-     */
+    private Entry createLiveEntry(DataStore dataStore, String key) {
+        DataType type = dataStore.type(key);
+        switch (type) {
+            case STRING: {
+                String v = dataStore.get(key);
+                if (v == null) return null;
+                long ttl = dataStore.ttl(key);
+                long expireAt = ttl > 0 ? System.currentTimeMillis() + ttl * 1000 : -1;
+                return new Entry(new RedisString(v), expireAt);
+            }
+            case LIST: {
+                String[] elems = dataStore.lRange(key, 0, -1);
+                if (elems == null || elems.length == 0) return null;
+                RedisList list = new RedisList();
+                for (String e : elems) list.add(e);
+                long ttl = dataStore.ttl(key);
+                long expireAt = ttl > 0 ? System.currentTimeMillis() + ttl * 1000 : -1;
+                return new Entry(list, expireAt);
+            }
+            case SET: {
+                Set<String> members = dataStore.sMembers(key);
+                if (members == null || members.isEmpty()) return null;
+                RedisSet set = new RedisSet(members);
+                long ttl = dataStore.ttl(key);
+                long expireAt = ttl > 0 ? System.currentTimeMillis() + ttl * 1000 : -1;
+                return new Entry(set, expireAt);
+            }
+            case HASH: {
+                Map<String, String> fields = dataStore.hGetAll(key);
+                if (fields == null || fields.isEmpty()) return null;
+                RedisHash hash = new RedisHash(fields);
+                long ttl = dataStore.ttl(key);
+                long expireAt = ttl > 0 ? System.currentTimeMillis() + ttl * 1000 : -1;
+                return new Entry(hash, expireAt);
+            }
+            default:
+                return null;
+        }
+    }
+
+    private void writeValue(OutputStream out, RedisValue value) throws IOException {
+        if (value instanceof RedisString) {
+            out.write(TYPE_STRING);
+            writeString(out, ((RedisString) value).getStringValue());
+        } else if (value instanceof RedisList) {
+            RedisList list = (RedisList) value;
+            out.write(TYPE_LIST);
+            writeInt32(out, (int) list.size());
+            for (String elem : list) {
+                writeString(out, elem);
+            }
+        } else if (value instanceof RedisSet) {
+            RedisSet set = (RedisSet) value;
+            out.write(TYPE_SET);
+            writeInt32(out, (int) set.size());
+            for (String member : set) {
+                writeString(out, member);
+            }
+        } else if (value instanceof RedisHash) {
+            RedisHash hash = (RedisHash) value;
+            out.write(TYPE_HASH);
+            writeInt32(out, (int) hash.size());
+            for (Map.Entry<String, String> e : hash.entries()) {
+                writeString(out, e.getKey());
+                writeString(out, e.getValue());
+            }
+        }
+    }
+
     private void writeString(OutputStream out, String value) throws IOException {
-        byte[] bytes = value.getBytes();
-        out.write(bytes.length);
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        writeInt32(out, bytes.length);
         out.write(bytes);
     }
 
-    /**
-     * 写入字节数组
-     */
-    private void writeBytes(OutputStream out, byte[] value) throws IOException {
-        out.write(value.length >>> 24);
-        out.write(value.length >>> 16);
-        out.write(value.length >>> 8);
-        out.write(value.length);
-        out.write(value);
+    private void writeInt32(OutputStream out, int val) throws IOException {
+        out.write((val >>> 24) & 0xFF);
+        out.write((val >>> 16) & 0xFF);
+        out.write((val >>> 8) & 0xFF);
+        out.write(val & 0xFF);
+    }
+
+    private void writeInt64(OutputStream out, long val) throws IOException {
+        out.write((int) ((val >>> 56) & 0xFF));
+        out.write((int) ((val >>> 48) & 0xFF));
+        out.write((int) ((val >>> 40) & 0xFF));
+        out.write((int) ((val >>> 32) & 0xFF));
+        out.write((int) ((val >>> 24) & 0xFF));
+        out.write((int) ((val >>> 16) & 0xFF));
+        out.write((int) ((val >>> 8) & 0xFF));
+        out.write((int) (val & 0xFF));
     }
 }

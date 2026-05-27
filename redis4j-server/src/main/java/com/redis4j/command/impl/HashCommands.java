@@ -379,7 +379,7 @@ public class HashCommands {
 
         @Override
         protected RedisMessage doExecute(String[] args) {
-            long delta = Long.parseLong(args[2]);
+            long delta = parseLong(args[2]);
             long result = dataStore.hIncrBy(args[0], args[1], delta);
             return RedisMessageHelper.integer(result);
         }

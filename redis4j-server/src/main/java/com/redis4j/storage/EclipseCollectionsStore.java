@@ -683,6 +683,11 @@ public class EclipseCollectionsStore implements DataStore {
         }
     }
 
+    @Override
+    public Set<String> getAllKeys() {
+        return new HashSet<>(store.keySet());
+    }
+
     private <T> T modifyList(String key, java.util.function.Function<RedisList, T> operation) {
         while (true) {
             Entry entry = store.get(key);
