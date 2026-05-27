@@ -1,11 +1,13 @@
 package com.redis4j.command.impl;
 
-import com.redis4j.command.Command;
+import com.redis4j.command.AbstractCommand;
+import com.redis4j.command.annotation.RedisCommand;
 import com.redis4j.protocol.RedisMessageHelper;
 import com.redis4j.storage.DataStore;
 import io.netty.handler.codec.redis.RedisMessage;
 
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * String 命令实现
@@ -14,7 +16,8 @@ public class StringCommands {
 
     // ==================== GET ====================
 
-    public static class StringGetCommand implements Command {
+    @RedisCommand(name = "GET", arity = 2)
+    public static class StringGetCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public StringGetCommand(DataStore dataStore) {
@@ -32,10 +35,7 @@ public class StringCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'get' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             String value = dataStore.get(args[0]);
             return RedisMessageHelper.bulkString(value);
         }
@@ -43,7 +43,8 @@ public class StringCommands {
 
     // ==================== SET ====================
 
-    public static class StringSetCommand implements Command {
+    @RedisCommand(name = "SET", arity = -2)
+    public static class StringSetCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public StringSetCommand(DataStore dataStore) {
@@ -57,14 +58,21 @@ public class StringCommands {
 
         @Override
         public int getArity() {
-            return -1;
+            return -2; // 至少 2 个参数
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 2) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'set' command");
-            }
+        protected boolean validate(String[] args) {
+            return args != null && args.length >= 2;
+        }
+
+        @Override
+        protected String getValidationErrorMessage() {
+            return "wrong number of arguments for 'set' command (at least 2 required)";
+        }
+
+        @Override
+        protected RedisMessage doExecute(String[] args) {
             String key = args[0];
             String value = args[1];
             dataStore.set(key, value);
@@ -74,7 +82,8 @@ public class StringCommands {
 
     // ==================== SETNX ====================
 
-    public static class StringSetNxCommand implements Command {
+    @RedisCommand(name = "SETNX", arity = 3)
+    public static class StringSetNxCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public StringSetNxCommand(DataStore dataStore) {
@@ -92,10 +101,7 @@ public class StringCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 2) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'setnx' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             boolean result = dataStore.setNx(args[0], args[1]);
             return RedisMessageHelper.integer(result ? 1 : 0);
         }
@@ -103,7 +109,8 @@ public class StringCommands {
 
     // ==================== SETEX ====================
 
-    public static class StringSetExCommand implements Command {
+    @RedisCommand(name = "SETEX", arity = 4)
+    public static class StringSetExCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public StringSetExCommand(DataStore dataStore) {
@@ -121,26 +128,24 @@ public class StringCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 3) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'setex' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             String key = args[0];
-            long seconds;
-            try {
-                seconds = Long.parseLong(args[1]);
-            } catch (NumberFormatException e) {
-                return RedisMessageHelper.error("ERR", "value is not an integer or out of range");
-            }
+            long seconds = Long.parseLong(args[1]);
             String value = args[2];
             dataStore.setEx(key, value, seconds);
             return RedisMessageHelper.ok();
+        }
+
+        @Override
+        protected void logExecution(String[] args, RedisMessage result) {
+            // SETEX 不需要详细日志
         }
     }
 
     // ==================== MGET ====================
 
-    public static class StringMGetCommand implements Command {
+    @RedisCommand(name = "MGET", arity = -2)
+    public static class StringMGetCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public StringMGetCommand(DataStore dataStore) {
@@ -154,14 +159,21 @@ public class StringCommands {
 
         @Override
         public int getArity() {
-            return -1;
+            return -2;
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'mget' command");
-            }
+        protected boolean validate(String[] args) {
+            return args != null && args.length >= 1;
+        }
+
+        @Override
+        protected String getValidationErrorMessage() {
+            return "wrong number of arguments for 'mget' command (at least 1 required)";
+        }
+
+        @Override
+        protected RedisMessage doExecute(String[] args) {
             String[] values = dataStore.mGet(args);
             return RedisMessageHelper.array(Arrays.stream(values)
                     .map(RedisMessageHelper::bulkString)
@@ -171,7 +183,8 @@ public class StringCommands {
 
     // ==================== MSET ====================
 
-    public static class StringMSetCommand implements Command {
+    @RedisCommand(name = "MSET", arity = -2)
+    public static class StringMSetCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public StringMSetCommand(DataStore dataStore) {
@@ -185,14 +198,21 @@ public class StringCommands {
 
         @Override
         public int getArity() {
-            return -1;
+            return -2;
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 2 || args.length % 2 != 0) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'mset' command");
-            }
+        protected boolean validate(String[] args) {
+            return args != null && args.length >= 2 && args.length % 2 == 0;
+        }
+
+        @Override
+        protected String getValidationErrorMessage() {
+            return "wrong number of arguments for 'mset' command (even number of arguments required)";
+        }
+
+        @Override
+        protected RedisMessage doExecute(String[] args) {
             java.util.Map<String, String> map = new java.util.HashMap<>();
             for (int i = 0; i < args.length; i += 2) {
                 map.put(args[i], args[i + 1]);
@@ -204,7 +224,8 @@ public class StringCommands {
 
     // ==================== INCR ====================
 
-    public static class StringIncrCommand implements Command {
+    @RedisCommand(name = "INCR", arity = 2)
+    public static class StringIncrCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public StringIncrCommand(DataStore dataStore) {
@@ -222,22 +243,16 @@ public class StringCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'incr' command");
-            }
-            try {
-                long result = dataStore.incr(args[0]);
-                return RedisMessageHelper.integer(result);
-            } catch (Exception e) {
-                return RedisMessageHelper.error("ERR", e.getMessage());
-            }
+        protected RedisMessage doExecute(String[] args) {
+            long result = dataStore.incr(args[0]);
+            return RedisMessageHelper.integer(result);
         }
     }
 
     // ==================== INCRBY ====================
 
-    public static class StringIncrByCommand implements Command {
+    @RedisCommand(name = "INCRBY", arity = 3)
+    public static class StringIncrByCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public StringIncrByCommand(DataStore dataStore) {
@@ -255,28 +270,17 @@ public class StringCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 2) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'incrby' command");
-            }
-            long delta;
-            try {
-                delta = Long.parseLong(args[1]);
-            } catch (NumberFormatException e) {
-                return RedisMessageHelper.error("ERR", "value is not an integer or out of range");
-            }
-            try {
-                long result = dataStore.incrBy(args[0], delta);
-                return RedisMessageHelper.integer(result);
-            } catch (Exception e) {
-                return RedisMessageHelper.error("ERR", e.getMessage());
-            }
+        protected RedisMessage doExecute(String[] args) {
+            long delta = Long.parseLong(args[1]);
+            long result = dataStore.incrBy(args[0], delta);
+            return RedisMessageHelper.integer(result);
         }
     }
 
     // ==================== DECR ====================
 
-    public static class StringDecrCommand implements Command {
+    @RedisCommand(name = "DECR", arity = 2)
+    public static class StringDecrCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public StringDecrCommand(DataStore dataStore) {
@@ -294,22 +298,16 @@ public class StringCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'decr' command");
-            }
-            try {
-                long result = dataStore.decr(args[0]);
-                return RedisMessageHelper.integer(result);
-            } catch (Exception e) {
-                return RedisMessageHelper.error("ERR", e.getMessage());
-            }
+        protected RedisMessage doExecute(String[] args) {
+            long result = dataStore.decr(args[0]);
+            return RedisMessageHelper.integer(result);
         }
     }
 
     // ==================== DECRBY ====================
 
-    public static class StringDecrByCommand implements Command {
+    @RedisCommand(name = "DECRBY", arity = 3)
+    public static class StringDecrByCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public StringDecrByCommand(DataStore dataStore) {
@@ -327,28 +325,17 @@ public class StringCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 2) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'decrby' command");
-            }
-            long delta;
-            try {
-                delta = Long.parseLong(args[1]);
-            } catch (NumberFormatException e) {
-                return RedisMessageHelper.error("ERR", "value is not an integer or out of range");
-            }
-            try {
-                long result = dataStore.decrBy(args[0], delta);
-                return RedisMessageHelper.integer(result);
-            } catch (Exception e) {
-                return RedisMessageHelper.error("ERR", e.getMessage());
-            }
+        protected RedisMessage doExecute(String[] args) {
+            long delta = Long.parseLong(args[1]);
+            long result = dataStore.decrBy(args[0], delta);
+            return RedisMessageHelper.integer(result);
         }
     }
 
     // ==================== STRLEN ====================
 
-    public static class StringStrlenCommand implements Command {
+    @RedisCommand(name = "STRLEN", arity = 2)
+    public static class StringStrlenCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public StringStrlenCommand(DataStore dataStore) {
@@ -366,10 +353,7 @@ public class StringCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'strlen' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             long length = dataStore.strlen(args[0]);
             return RedisMessageHelper.integer(length);
         }
@@ -377,7 +361,8 @@ public class StringCommands {
 
     // ==================== APPEND ====================
 
-    public static class StringAppendCommand implements Command {
+    @RedisCommand(name = "APPEND", arity = 3)
+    public static class StringAppendCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public StringAppendCommand(DataStore dataStore) {
@@ -395,16 +380,9 @@ public class StringCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 2) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'append' command");
-            }
-            try {
-                long length = dataStore.append(args[0], args[1]);
-                return RedisMessageHelper.integer(length);
-            } catch (Exception e) {
-                return RedisMessageHelper.error("ERR", e.getMessage());
-            }
+        protected RedisMessage doExecute(String[] args) {
+            long length = dataStore.append(args[0], args[1]);
+            return RedisMessageHelper.integer(length);
         }
     }
 }

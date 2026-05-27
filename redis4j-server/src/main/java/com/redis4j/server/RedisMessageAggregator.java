@@ -7,26 +7,35 @@ import io.netty.handler.codec.redis.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Redis 消息聚合器
  * 将 RedisDecoder 分片输出的消息组合成完整的消息
+ *
+ * 状态机：
+ * - IDLE: 等待接收数组头
+ * - COLLECTING_ARRAY: 正在收集数组元素
  */
 public class RedisMessageAggregator extends ChannelDuplexHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(RedisMessageAggregator.class);
 
-    // 聚合状态
-    private int expectedArrayLength = -1;
-    private List<RedisMessage> arrayElements = null;
+    // 状态枚举
+    private enum State {
+        IDLE,
+        COLLECTING_ARRAY
+    }
 
-    // 待配对的 bulk string header 栈
-    private final List<BulkStringHeaderRedisMessage> pendingHeaders = new ArrayList<>();
-    // 待配对的 bulk string content 栈
-    private final List<byte[]> pendingContents = new ArrayList<>();
+    private State state = State.IDLE;
+    private int expectedArrayLength = -1;
+    private final List<RedisMessage> arrayElements = new ArrayList<>();
+
+    // 队列：待配对的 bulk string header 和 content
+    // 使用 FIFO 队列确保顺序正确
+    private final List<BulkStringHeaderRedisMessage> headerQueue = new ArrayList<>();
+    private final List<byte[]> contentQueue = new ArrayList<>();
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
@@ -35,127 +44,163 @@ public class RedisMessageAggregator extends ChannelDuplexHandler {
             return;
         }
 
-        RedisMessage message = (RedisMessage) msg;
-
-        // 处理 bulk string 内容 - 直接读取字节并保存
-        if (msg instanceof DefaultLastBulkStringRedisContent) {
-            ByteBuf content = ((DefaultLastBulkStringRedisContent) msg).content();
-            if (content != null && content.isReadable()) {
-                byte[] bytes = new byte[content.readableBytes()];
-                content.getBytes(content.readerIndex(), bytes);
-                pendingContents.add(bytes);
-            } else {
-                pendingContents.add(null);
-            }
-            checkArrayComplete(ctx);
-            return;
+        try {
+            processMessage(ctx, (RedisMessage) msg);
+        } catch (Exception e) {
+            logger.error("Error processing message", e);
+            ctx.fireChannelRead(msg);
         }
+    }
 
-        if (msg instanceof DefaultBulkStringRedisContent) {
-            ByteBuf content = ((DefaultBulkStringRedisContent) msg).content();
-            if (content != null && content.isReadable()) {
-                byte[] bytes = new byte[content.readableBytes()];
-                content.getBytes(content.readerIndex(), bytes);
-                
-                // 合并到最后一个 pending content
-                if (!pendingContents.isEmpty() && pendingContents.get(pendingContents.size() - 1) != null) {
-                    byte[] last = pendingContents.remove(pendingContents.size() - 1);
-                    byte[] combined = new byte[last.length + bytes.length];
-                    System.arraycopy(last, 0, combined, 0, last.length);
-                    System.arraycopy(bytes, 0, combined, last.length, bytes.length);
-                    pendingContents.add(combined);
-                } else {
-                    pendingContents.add(bytes);
-                }
-            } else {
-                pendingContents.add(null);
-            }
-            checkArrayComplete(ctx);
-            return;
+    private void processMessage(ChannelHandlerContext ctx, RedisMessage msg) throws Exception {
+        switch (state) {
+            case IDLE:
+                processIdleState(ctx, msg);
+                break;
+            case COLLECTING_ARRAY:
+                processCollectingState(ctx, msg);
+                break;
         }
-
-        // 处理 bulk string header
-        if (msg instanceof BulkStringHeaderRedisMessage) {
-            pendingHeaders.add((BulkStringHeaderRedisMessage) msg);
-            checkArrayComplete(ctx);
-            return;
-        }
-
-        // 处理数组 header
-        if (msg instanceof ArrayHeaderRedisMessage) {
-            ArrayHeaderRedisMessage header = (ArrayHeaderRedisMessage) msg;
-            if (header.isNull()) {
-                ctx.fireChannelRead(ArrayRedisMessage.NULL_INSTANCE);
-            } else {
-                // 重置状态
-                this.expectedArrayLength = (int) header.length();
-                this.arrayElements = new ArrayList<>(expectedArrayLength);
-                this.pendingHeaders.clear();
-                this.pendingContents.clear();
-
-                if (expectedArrayLength == 0) {
-                    ctx.fireChannelRead(new ArrayRedisMessage(new ArrayList<>()));
-                    this.arrayElements = null;
-                }
-            }
-            return;
-        }
-
-        // 处理数组元素（已经是完整类型）
-        if (this.arrayElements != null) {
-            this.arrayElements.add(message);
-            checkArrayComplete(ctx);
-            return;
-        }
-
-        // 其他消息类型直接传递
-        ctx.fireChannelRead(message);
     }
 
     /**
-     * 检查数组是否完成，并配对 header + content
+     * IDLE 状态：等待数组头
      */
-    private void checkArrayComplete(ChannelHandlerContext ctx) {
-        if (this.arrayElements == null) {
-            return;
+    private void processIdleState(ChannelHandlerContext ctx, RedisMessage msg) {
+        if (msg instanceof ArrayHeaderRedisMessage) {
+            ArrayHeaderRedisMessage header = (ArrayHeaderRedisMessage) msg;
+            if (header.isNull()) {
+                // *-1\r\n 表示 null 数组
+                ctx.fireChannelRead(ArrayRedisMessage.NULL_INSTANCE);
+                return;
+            }
+
+            expectedArrayLength = (int) header.length();
+            if (expectedArrayLength == 0) {
+                // *0\r\n 表示空数组
+                ctx.fireChannelRead(new ArrayRedisMessage(new ArrayList<>()));
+                return;
+            }
+
+            // 开始收集数组元素
+            arrayElements.clear();
+            headerQueue.clear();
+            contentQueue.clear();
+            state = State.COLLECTING_ARRAY;
+
+        } else if (msg instanceof BulkStringHeaderRedisMessage) {
+            // 单个 bulk string 命令（如 PING）
+            headerQueue.add((BulkStringHeaderRedisMessage) msg);
+            state = State.COLLECTING_ARRAY;
+            expectedArrayLength = 1;
+            arrayElements.clear();
+
+        } else {
+            // 其他消息类型直接传递
+            ctx.fireChannelRead(msg);
+        }
+    }
+
+    /**
+     * COLLECTING_ARRAY 状态：正在收集数组元素
+     */
+    private void processCollectingState(ChannelHandlerContext ctx, RedisMessage msg) {
+        if (msg instanceof BulkStringHeaderRedisMessage) {
+            headerQueue.add((BulkStringHeaderRedisMessage) msg);
+
+        } else if (msg instanceof DefaultLastBulkStringRedisContent) {
+            ByteBuf content = ((DefaultLastBulkStringRedisContent) msg).content();
+            contentQueue.add(readBytes(content));
+
+        } else if (msg instanceof DefaultBulkStringRedisContent) {
+            ByteBuf content = ((DefaultBulkStringRedisContent) msg).content();
+            contentQueue.add(readBytes(content));
+
+        } else if (msg instanceof ArrayHeaderRedisMessage) {
+            // 嵌套数组 - 先输出当前数组，再处理新数组
+            // （实际上 Redis 协议中数组不会这样嵌套，这里是防御性处理）
+            if (!headerQueue.isEmpty() || !contentQueue.isEmpty()) {
+                emitCurrentArray(ctx);
+            }
+            processIdleState(ctx, msg);
+
+        } else {
+            // 其他消息类型（如 SimpleString, Integer）直接添加
+            arrayElements.add(msg);
         }
 
-        // 尝试配对 header + content
-        while (!this.pendingHeaders.isEmpty()) {
-            BulkStringHeaderRedisMessage header = this.pendingHeaders.remove(pendingHeaders.size() - 1);
+        // 尝试配对并检查是否完成
+        matchAndCheckComplete(ctx);
+    }
+
+    /**
+     * 尝试配对 header 和 content
+     */
+    private void matchAndCheckComplete(ChannelHandlerContext ctx) {
+        while (!headerQueue.isEmpty()) {
+            BulkStringHeaderRedisMessage header = headerQueue.remove(0);
 
             if (header.isNull()) {
-                this.arrayElements.add(FullBulkStringRedisMessage.NULL_INSTANCE);
-            } else if (!this.pendingContents.isEmpty()) {
-                byte[] bytes = this.pendingContents.remove(pendingContents.size() - 1);
-                if (bytes != null && bytes.length > 0) {
-                    // 创建新的 ByteBuf 并持有它
-                    ByteBuf buf = Unpooled.wrappedBuffer(bytes);
-                    this.arrayElements.add(new FullBulkStringRedisMessage(buf));
-                } else {
-                    this.arrayElements.add(FullBulkStringRedisMessage.NULL_INSTANCE);
-                }
-            } else {
+                arrayElements.add(FullBulkStringRedisMessage.NULL_INSTANCE);
+                continue;
+            }
+
+            if (contentQueue.isEmpty()) {
                 // 没有 content，等待
-                this.pendingHeaders.add(header);
+                headerQueue.add(0, header);
                 break;
+            }
+
+            byte[] bytes = contentQueue.remove(0);
+            if (bytes != null && bytes.length > 0) {
+                ByteBuf buf = Unpooled.wrappedBuffer(bytes);
+                arrayElements.add(new FullBulkStringRedisMessage(buf));
+            } else {
+                arrayElements.add(FullBulkStringRedisMessage.NULL_INSTANCE);
             }
         }
 
-        // 检查数组是否完成
-        if (this.arrayElements != null && this.arrayElements.size() == this.expectedArrayLength) {
-            List<RedisMessage> elements = new ArrayList<>(this.arrayElements);
-            ctx.fireChannelRead(new ArrayRedisMessage(elements));
-            this.arrayElements = null;
-            this.expectedArrayLength = -1;
-            this.pendingHeaders.clear();
-            this.pendingContents.clear();
+        // 检查是否完成
+        if (arrayElements.size() == expectedArrayLength) {
+            emitCurrentArray(ctx);
         }
+    }
+
+    /**
+     * 输出当前数组并重置状态
+     */
+    private void emitCurrentArray(ChannelHandlerContext ctx) {
+        ctx.fireChannelRead(new ArrayRedisMessage(new ArrayList<>(arrayElements)));
+        reset();
+    }
+
+    /**
+     * 重置状态
+     */
+    private void reset() {
+        state = State.IDLE;
+        expectedArrayLength = -1;
+        arrayElements.clear();
+        headerQueue.clear();
+        contentQueue.clear();
+    }
+
+    /**
+     * 从 ByteBuf 读取字节数组
+     */
+    private byte[] readBytes(ByteBuf buf) {
+        if (buf == null || !buf.isReadable()) {
+            return null;
+        }
+        byte[] bytes = new byte[buf.readableBytes()];
+        buf.getBytes(buf.readerIndex(), bytes);
+        return bytes;
     }
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
         logger.error("Error in RedisMessageAggregator", cause);
+        reset();
         ctx.close();
     }
 }

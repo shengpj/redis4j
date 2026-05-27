@@ -1,6 +1,7 @@
 package com.redis4j.client;
 
 import com.redis4j.protocol.RedisMessageHelper;
+import com.redis4j.protocol.RedisMessageUtil;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
@@ -77,8 +78,7 @@ public class RedisClient {
                         pipeline.addLast(new SimpleChannelInboundHandler<RedisMessage>() {
                             @Override
                             protected void channelRead0(ChannelHandlerContext ctx, RedisMessage msg) throws Exception {
-                                // 复制消息以避免 buffer 引用问题
-                                RedisMessage copy = deepCopyMessage(msg);
+                                RedisMessage copy = RedisMessageUtil.deepCopy(msg);
                                 synchronized (responseLock) {
                                     pendingResponses.add(copy);
                                     responseLock.notifyAll();
@@ -210,50 +210,5 @@ public class RedisClient {
 
     public int getPort() {
         return port;
-    }
-
-    /**
-     * 深度复制 RedisMessage 以避免 buffer 引用问题
-     */
-    private RedisMessage deepCopyMessage(RedisMessage msg) {
-        if (msg instanceof FullBulkStringRedisMessage) {
-            FullBulkStringRedisMessage bulk = (FullBulkStringRedisMessage) msg;
-            if (bulk.isNull()) {
-                return FullBulkStringRedisMessage.NULL_INSTANCE;
-            }
-            io.netty.buffer.ByteBuf content = bulk.content();
-            if (content == null || !content.isReadable()) {
-                return FullBulkStringRedisMessage.NULL_INSTANCE;
-            }
-            byte[] bytes = new byte[content.readableBytes()];
-            content.getBytes(content.readerIndex(), bytes);
-            io.netty.buffer.ByteBuf copy = io.netty.buffer.Unpooled.wrappedBuffer(bytes);
-            return new io.netty.handler.codec.redis.FullBulkStringRedisMessage(copy);
-        }
-        if (msg instanceof SimpleStringRedisMessage) {
-            return new io.netty.handler.codec.redis.SimpleStringRedisMessage(
-                ((io.netty.handler.codec.redis.SimpleStringRedisMessage) msg).content());
-        }
-        if (msg instanceof ErrorRedisMessage) {
-            return new io.netty.handler.codec.redis.ErrorRedisMessage(
-                ((io.netty.handler.codec.redis.ErrorRedisMessage) msg).content());
-        }
-        if (msg instanceof IntegerRedisMessage) {
-            return new io.netty.handler.codec.redis.IntegerRedisMessage(
-                ((io.netty.handler.codec.redis.IntegerRedisMessage) msg).value());
-        }
-        if (msg instanceof ArrayRedisMessage) {
-            io.netty.handler.codec.redis.ArrayRedisMessage array = 
-                (io.netty.handler.codec.redis.ArrayRedisMessage) msg;
-            if (array.isNull()) {
-                return io.netty.handler.codec.redis.ArrayRedisMessage.NULL_INSTANCE;
-            }
-            List<RedisMessage> copy = new ArrayList<>();
-            for (RedisMessage child : array.children()) {
-                copy.add(deepCopyMessage(child));
-            }
-            return new io.netty.handler.codec.redis.ArrayRedisMessage(copy);
-        }
-        return msg;
     }
 }

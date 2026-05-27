@@ -1,16 +1,11 @@
 package com.redis4j.server;
 
+import com.redis4j.storage.StorageType;
+
 /**
  * Redis 服务端配置
  */
 public class ServerConfig {
-
-    public enum DataStoreType {
-        MEMORY,      // JDK ConcurrentHashMap
-        PARTITIONED, // 分区 ConcurrentHashMap (高并发推荐)
-        AGRONA,      // Agrona 高性能数据结构 (已废弃)
-        ECLIPSE      // Eclipse Collections (已废弃)
-    }
 
     private int partitions = Runtime.getRuntime().availableProcessors() * 2; // 分区数量
 
@@ -21,7 +16,7 @@ public class ServerConfig {
     private int soTimeout = 0;
     private String dataDir = "./data";
     private boolean daemon = false;
-    private DataStoreType dataStoreType = DataStoreType.PARTITIONED;
+    private StorageType dataStoreType = StorageType.PARTITIONED;
 
     public ServerConfig() {
     }
@@ -58,11 +53,11 @@ public class ServerConfig {
         this.workerThreads = workerThreads;
     }
 
-    public DataStoreType getDataStoreType() {
+    public StorageType getDataStoreType() {
         return dataStoreType;
     }
 
-    public void setDataStoreType(DataStoreType dataStoreType) {
+    public void setDataStoreType(StorageType dataStoreType) {
         this.dataStoreType = dataStoreType;
     }
 

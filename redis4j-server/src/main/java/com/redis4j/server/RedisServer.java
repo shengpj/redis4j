@@ -2,8 +2,8 @@ package com.redis4j.server;
 
 import com.redis4j.command.CommandRegistry;
 import com.redis4j.storage.DataStore;
-import com.redis4j.storage.MemoryStore;
-import com.redis4j.storage.PartitionedMemoryStore;
+import com.redis4j.storage.DataStoreFactory;
+import com.redis4j.storage.StorageType;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.*;
@@ -43,7 +43,7 @@ public class RedisServer {
 
     public RedisServer(ServerConfig config) {
         this.config = config;
-        this.dataStore = createDataStore(config.getDataStoreType());
+        this.dataStore = DataStoreFactory.create(config.getDataStoreType(), config.getPartitions());
         this.commandRegistry = new CommandRegistry(dataStore);
         logger.info("Using DataStore type: {}", config.getDataStoreType());
     }
@@ -52,21 +52,6 @@ public class RedisServer {
         this.config = config;
         this.dataStore = dataStore;
         this.commandRegistry = commandRegistry;
-    }
-
-    private DataStore createDataStore(ServerConfig.DataStoreType type) {
-        return switch (type) {
-            case MEMORY -> new MemoryStore();
-            case PARTITIONED -> new PartitionedMemoryStore(config.getPartitions());
-            case AGRONA -> {
-                logger.warn("AgronaStore is deprecated, using PartitionedMemoryStore instead");
-                yield new PartitionedMemoryStore(config.getPartitions());
-            }
-            case ECLIPSE -> {
-                logger.warn("EclipseCollectionsStore is deprecated, using PartitionedMemoryStore instead");
-                yield new PartitionedMemoryStore(config.getPartitions());
-            }
-        };
     }
 
     /**
@@ -196,7 +181,7 @@ public class RedisServer {
                 case "--store", "--datastore" -> {
                     if (i + 1 < args.length) {
                         String type = args[++i].toUpperCase();
-                        config.setDataStoreType(ServerConfig.DataStoreType.valueOf(type));
+                        config.setDataStoreType(StorageType.valueOf(type));
                     }
                 }
             }

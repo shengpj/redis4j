@@ -1,6 +1,7 @@
 package com.redis4j.command.impl;
 
-import com.redis4j.command.Command;
+import com.redis4j.command.AbstractCommand;
+import com.redis4j.command.annotation.RedisCommand;
 import com.redis4j.protocol.RedisMessageHelper;
 import com.redis4j.storage.DataStore;
 import io.netty.handler.codec.redis.RedisMessage;
@@ -15,7 +16,8 @@ public class KeyCommands {
 
     // ==================== DEL ====================
 
-    public static class KeyDelCommand implements Command {
+    @RedisCommand(name = "DEL", arity = -2)
+    public static class KeyDelCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public KeyDelCommand(DataStore dataStore) {
@@ -29,14 +31,16 @@ public class KeyCommands {
 
         @Override
         public int getArity() {
-            return -1;
+            return -2; // 至少 1 个参数
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'del' command");
-            }
+        protected boolean validate(String[] args) {
+            return args != null && args.length >= 1;
+        }
+
+        @Override
+        protected RedisMessage doExecute(String[] args) {
             long count = dataStore.del(args);
             return RedisMessageHelper.integer(count);
         }
@@ -44,7 +48,8 @@ public class KeyCommands {
 
     // ==================== EXISTS ====================
 
-    public static class KeyExistsCommand implements Command {
+    @RedisCommand(name = "EXISTS", arity = -2)
+    public static class KeyExistsCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public KeyExistsCommand(DataStore dataStore) {
@@ -58,14 +63,16 @@ public class KeyCommands {
 
         @Override
         public int getArity() {
-            return -1;
+            return -2; // 至少 1 个参数
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'exists' command");
-            }
+        protected boolean validate(String[] args) {
+            return args != null && args.length >= 1;
+        }
+
+        @Override
+        protected RedisMessage doExecute(String[] args) {
             long count = dataStore.exists(args);
             return RedisMessageHelper.integer(count);
         }
@@ -73,7 +80,8 @@ public class KeyCommands {
 
     // ==================== EXPIRE ====================
 
-    public static class KeyExpireCommand implements Command {
+    @RedisCommand(name = "EXPIRE", arity = 3)
+    public static class KeyExpireCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public KeyExpireCommand(DataStore dataStore) {
@@ -91,16 +99,8 @@ public class KeyCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 2) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'expire' command");
-            }
-            long seconds;
-            try {
-                seconds = Long.parseLong(args[1]);
-            } catch (NumberFormatException e) {
-                return RedisMessageHelper.error("ERR", "value is not an integer or out of range");
-            }
+        protected RedisMessage doExecute(String[] args) {
+            long seconds = Long.parseLong(args[1]);
             boolean result = dataStore.expire(args[0], seconds);
             return RedisMessageHelper.integer(result ? 1 : 0);
         }
@@ -108,7 +108,8 @@ public class KeyCommands {
 
     // ==================== EXPIREAT ====================
 
-    public static class KeyExpireAtCommand implements Command {
+    @RedisCommand(name = "EXPIREAT", arity = 3)
+    public static class KeyExpireAtCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public KeyExpireAtCommand(DataStore dataStore) {
@@ -126,17 +127,8 @@ public class KeyCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 2) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'expireat' command");
-            }
-            long timestamp;
-            try {
-                timestamp = Long.parseLong(args[1]);
-            } catch (NumberFormatException e) {
-                return RedisMessageHelper.error("ERR", "value is not an integer or out of range");
-            }
-            // 计算剩余秒数
+        protected RedisMessage doExecute(String[] args) {
+            long timestamp = Long.parseLong(args[1]);
             long now = System.currentTimeMillis() / 1000;
             long seconds = timestamp - now;
             if (seconds <= 0) {
@@ -150,7 +142,8 @@ public class KeyCommands {
 
     // ==================== TTL ====================
 
-    public static class KeyTtlCommand implements Command {
+    @RedisCommand(name = "TTL", arity = 2)
+    public static class KeyTtlCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public KeyTtlCommand(DataStore dataStore) {
@@ -168,10 +161,7 @@ public class KeyCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'ttl' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             long ttl = dataStore.ttl(args[0]);
             return RedisMessageHelper.integer(ttl);
         }
@@ -179,7 +169,8 @@ public class KeyCommands {
 
     // ==================== PTTL ====================
 
-    public static class KeyPttlCommand implements Command {
+    @RedisCommand(name = "PTTL", arity = 2)
+    public static class KeyPttlCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public KeyPttlCommand(DataStore dataStore) {
@@ -197,10 +188,7 @@ public class KeyCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'pttl' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             long ttl = dataStore.pttl(args[0]);
             return RedisMessageHelper.integer(ttl);
         }
@@ -208,7 +196,8 @@ public class KeyCommands {
 
     // ==================== PERSIST ====================
 
-    public static class KeyPersistCommand implements Command {
+    @RedisCommand(name = "PERSIST", arity = 2)
+    public static class KeyPersistCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public KeyPersistCommand(DataStore dataStore) {
@@ -226,10 +215,7 @@ public class KeyCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'persist' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             boolean result = dataStore.persist(args[0]);
             return RedisMessageHelper.integer(result ? 1 : 0);
         }
@@ -237,7 +223,8 @@ public class KeyCommands {
 
     // ==================== RENAME ====================
 
-    public static class KeyRenameCommand implements Command {
+    @RedisCommand(name = "RENAME", arity = 3)
+    public static class KeyRenameCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public KeyRenameCommand(DataStore dataStore) {
@@ -255,10 +242,7 @@ public class KeyCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 2) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'rename' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             dataStore.rename(args[0], args[1]);
             return RedisMessageHelper.ok();
         }
@@ -266,7 +250,8 @@ public class KeyCommands {
 
     // ==================== TYPE ====================
 
-    public static class KeyTypeCommand implements Command {
+    @RedisCommand(name = "TYPE", arity = 2)
+    public static class KeyTypeCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public KeyTypeCommand(DataStore dataStore) {
@@ -284,10 +269,7 @@ public class KeyCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'type' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             String type = dataStore.type(args[0]).name().toLowerCase();
             return RedisMessageHelper.simpleString(type);
         }
@@ -295,7 +277,8 @@ public class KeyCommands {
 
     // ==================== KEYS ====================
 
-    public static class KeyKeysCommand implements Command {
+    @RedisCommand(name = "KEYS", arity = 2)
+    public static class KeyKeysCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public KeyKeysCommand(DataStore dataStore) {
@@ -313,10 +296,7 @@ public class KeyCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'keys' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             Set<String> keys = dataStore.keys(args[0]);
             return RedisMessageHelper.array(keys.stream()
                     .map(RedisMessageHelper::bulkString)
@@ -326,7 +306,8 @@ public class KeyCommands {
 
     // ==================== DBSIZE ====================
 
-    public static class KeyDbSizeCommand implements Command {
+    @RedisCommand(name = "DBSIZE", arity = 1)
+    public static class KeyDbSizeCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public KeyDbSizeCommand(DataStore dataStore) {
@@ -344,7 +325,7 @@ public class KeyCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
+        protected RedisMessage doExecute(String[] args) {
             long size = dataStore.dbSize();
             return RedisMessageHelper.integer(size);
         }
@@ -352,7 +333,8 @@ public class KeyCommands {
 
     // ==================== FLUSHDB ====================
 
-    public static class KeyFlushDbCommand implements Command {
+    @RedisCommand(name = "FLUSHDB", arity = 1)
+    public static class KeyFlushDbCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public KeyFlushDbCommand(DataStore dataStore) {
@@ -370,7 +352,7 @@ public class KeyCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
+        protected RedisMessage doExecute(String[] args) {
             dataStore.flushDb();
             return RedisMessageHelper.ok();
         }
@@ -378,7 +360,8 @@ public class KeyCommands {
 
     // ==================== FLUSHALL ====================
 
-    public static class KeyFlushAllCommand implements Command {
+    @RedisCommand(name = "FLUSHALL", arity = 1)
+    public static class KeyFlushAllCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public KeyFlushAllCommand(DataStore dataStore) {
@@ -396,7 +379,7 @@ public class KeyCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
+        protected RedisMessage doExecute(String[] args) {
             dataStore.flushAll();
             return RedisMessageHelper.ok();
         }
@@ -404,7 +387,8 @@ public class KeyCommands {
 
     // ==================== PING ====================
 
-    public static class KeyPingCommand implements Command {
+    @RedisCommand(name = "PING", arity = 1)
+    public static class KeyPingCommand extends AbstractCommand {
         @Override
         public String getName() {
             return "PING";
@@ -412,11 +396,11 @@ public class KeyCommands {
 
         @Override
         public int getArity() {
-            return 1;
+            return 1; // 0 个参数
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
+        protected RedisMessage doExecute(String[] args) {
             if (args.length > 0 && args[0] != null && !args[0].isEmpty()) {
                 return RedisMessageHelper.bulkString(args[0]);
             }
@@ -426,7 +410,8 @@ public class KeyCommands {
 
     // ==================== ECHO ====================
 
-    public static class KeyEchoCommand implements Command {
+    @RedisCommand(name = "ECHO", arity = 2)
+    public static class KeyEchoCommand extends AbstractCommand {
         @Override
         public String getName() {
             return "ECHO";
@@ -438,17 +423,15 @@ public class KeyCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'echo' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             return RedisMessageHelper.bulkString(args[0]);
         }
     }
 
     // ==================== SELECT ====================
 
-    public static class KeySelectCommand implements Command {
+    @RedisCommand(name = "SELECT", arity = 2)
+    public static class KeySelectCommand extends AbstractCommand {
         @Override
         public String getName() {
             return "SELECT";
@@ -460,15 +443,15 @@ public class KeyCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            // 当前只支持单数据库，返回 OK
+        protected RedisMessage doExecute(String[] args) {
             return RedisMessageHelper.ok();
         }
     }
 
     // ==================== INFO ====================
 
-    public static class KeyInfoCommand implements Command {
+    @RedisCommand(name = "INFO", arity = 1)
+    public static class KeyInfoCommand extends AbstractCommand {
         @Override
         public String getName() {
             return "INFO";
@@ -476,11 +459,11 @@ public class KeyCommands {
 
         @Override
         public int getArity() {
-            return -1;
+            return 1;
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
+        protected RedisMessage doExecute(String[] args) {
             StringBuilder info = new StringBuilder();
             info.append("# Server\n");
             info.append("redis_version:1.0.0\n");
@@ -494,7 +477,8 @@ public class KeyCommands {
 
     // ==================== TIME ====================
 
-    public static class KeyTimeCommand implements Command {
+    @RedisCommand(name = "TIME", arity = 1)
+    public static class KeyTimeCommand extends AbstractCommand {
         @Override
         public String getName() {
             return "TIME";
@@ -506,7 +490,7 @@ public class KeyCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
+        protected RedisMessage doExecute(String[] args) {
             long now = System.currentTimeMillis();
             long seconds = now / 1000;
             long microseconds = (now % 1000) * 1000;

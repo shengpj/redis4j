@@ -1,6 +1,7 @@
 package com.redis4j.command.impl;
 
-import com.redis4j.command.Command;
+import com.redis4j.command.AbstractCommand;
+import com.redis4j.command.annotation.RedisCommand;
 import com.redis4j.protocol.RedisMessageHelper;
 import com.redis4j.storage.DataStore;
 import io.netty.handler.codec.redis.RedisMessage;
@@ -14,7 +15,8 @@ public class HashCommands {
 
     // ==================== HSET ====================
 
-    public static class HashHSetCommand implements Command {
+    @RedisCommand(name = "HSET", arity = -2)
+    public static class HashHSetCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public HashHSetCommand(DataStore dataStore) {
@@ -28,14 +30,16 @@ public class HashCommands {
 
         @Override
         public int getArity() {
-            return -1;
+            return -2; // 至少 3 个参数
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 3) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'hset' command");
-            }
+        protected boolean validate(String[] args) {
+            return args != null && args.length >= 3 && args.length % 2 == 1;
+        }
+
+        @Override
+        protected RedisMessage doExecute(String[] args) {
             String key = args[0];
             long count = 0;
             for (int i = 1; i < args.length; i += 2) {
@@ -50,7 +54,8 @@ public class HashCommands {
 
     // ==================== HSETNX ====================
 
-    public static class HashHSetNxCommand implements Command {
+    @RedisCommand(name = "HSETNX", arity = 4)
+    public static class HashHSetNxCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public HashHSetNxCommand(DataStore dataStore) {
@@ -68,10 +73,7 @@ public class HashCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 3) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'hsetnx' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             boolean result = dataStore.hSetNx(args[0], args[1], args[2]);
             return RedisMessageHelper.integer(result ? 1 : 0);
         }
@@ -79,7 +81,8 @@ public class HashCommands {
 
     // ==================== HGET ====================
 
-    public static class HashHGetCommand implements Command {
+    @RedisCommand(name = "HGET", arity = 3)
+    public static class HashHGetCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public HashHGetCommand(DataStore dataStore) {
@@ -97,10 +100,7 @@ public class HashCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 2) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'hget' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             String value = dataStore.hGet(args[0], args[1]);
             return RedisMessageHelper.bulkString(value);
         }
@@ -108,7 +108,8 @@ public class HashCommands {
 
     // ==================== HGETALL ====================
 
-    public static class HashHGetAllCommand implements Command {
+    @RedisCommand(name = "HGETALL", arity = 2)
+    public static class HashHGetAllCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public HashHGetAllCommand(DataStore dataStore) {
@@ -126,10 +127,7 @@ public class HashCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'hgetall' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             Map<String, String> map = dataStore.hGetAll(args[0]);
             List<RedisMessage> result = new ArrayList<>();
             for (Map.Entry<String, String> entry : map.entrySet()) {
@@ -142,7 +140,8 @@ public class HashCommands {
 
     // ==================== HDEL ====================
 
-    public static class HashHDelCommand implements Command {
+    @RedisCommand(name = "HDEL", arity = -2)
+    public static class HashHDelCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public HashHDelCommand(DataStore dataStore) {
@@ -156,14 +155,16 @@ public class HashCommands {
 
         @Override
         public int getArity() {
-            return -1;
+            return -2; // 至少 2 个参数
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 2) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'hdel' command");
-            }
+        protected boolean validate(String[] args) {
+            return args != null && args.length >= 2;
+        }
+
+        @Override
+        protected RedisMessage doExecute(String[] args) {
             String key = args[0];
             String[] fields = Arrays.copyOfRange(args, 1, args.length);
             long count = dataStore.hDel(key, fields);
@@ -173,7 +174,8 @@ public class HashCommands {
 
     // ==================== HEXISTS ====================
 
-    public static class HashHExistsCommand implements Command {
+    @RedisCommand(name = "HEXISTS", arity = 3)
+    public static class HashHExistsCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public HashHExistsCommand(DataStore dataStore) {
@@ -191,10 +193,7 @@ public class HashCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 2) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'hexists' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             boolean exists = dataStore.hExists(args[0], args[1]);
             return RedisMessageHelper.integer(exists ? 1 : 0);
         }
@@ -202,7 +201,8 @@ public class HashCommands {
 
     // ==================== HLEN ====================
 
-    public static class HashHLenCommand implements Command {
+    @RedisCommand(name = "HLEN", arity = 2)
+    public static class HashHLenCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public HashHLenCommand(DataStore dataStore) {
@@ -220,10 +220,7 @@ public class HashCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'hlen' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             long length = dataStore.hLen(args[0]);
             return RedisMessageHelper.integer(length);
         }
@@ -231,7 +228,8 @@ public class HashCommands {
 
     // ==================== HKEYS ====================
 
-    public static class HashHKeysCommand implements Command {
+    @RedisCommand(name = "HKEYS", arity = 2)
+    public static class HashHKeysCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public HashHKeysCommand(DataStore dataStore) {
@@ -249,10 +247,7 @@ public class HashCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'hkeys' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             Set<String> keys = dataStore.hKeys(args[0]);
             return RedisMessageHelper.array(keys.stream()
                     .map(RedisMessageHelper::bulkString)
@@ -262,7 +257,8 @@ public class HashCommands {
 
     // ==================== HVALS ====================
 
-    public static class HashHValsCommand implements Command {
+    @RedisCommand(name = "HVALS", arity = 2)
+    public static class HashHValsCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public HashHValsCommand(DataStore dataStore) {
@@ -280,10 +276,7 @@ public class HashCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'hvals' command");
-            }
+        protected RedisMessage doExecute(String[] args) {
             String[] vals = dataStore.hVals(args[0]);
             return RedisMessageHelper.array(Arrays.stream(vals)
                     .map(RedisMessageHelper::bulkString)
@@ -293,7 +286,8 @@ public class HashCommands {
 
     // ==================== HMSET ====================
 
-    public static class HashHMSetCommand implements Command {
+    @RedisCommand(name = "HMSET", arity = -2)
+    public static class HashHMSetCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public HashHMSetCommand(DataStore dataStore) {
@@ -307,14 +301,16 @@ public class HashCommands {
 
         @Override
         public int getArity() {
-            return -1;
+            return -2; // 至少 3 个参数
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 3 || args.length % 2 != 1) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'hmset' command");
-            }
+        protected boolean validate(String[] args) {
+            return args != null && args.length >= 3 && args.length % 2 == 1;
+        }
+
+        @Override
+        protected RedisMessage doExecute(String[] args) {
             String key = args[0];
             Map<String, String> map = new HashMap<>();
             for (int i = 1; i < args.length; i += 2) {
@@ -327,7 +323,8 @@ public class HashCommands {
 
     // ==================== HMGET ====================
 
-    public static class HashHMGetCommand implements Command {
+    @RedisCommand(name = "HMGET", arity = -2)
+    public static class HashHMGetCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public HashHMGetCommand(DataStore dataStore) {
@@ -341,14 +338,16 @@ public class HashCommands {
 
         @Override
         public int getArity() {
-            return -1;
+            return -2; // 至少 2 个参数
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 2) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'hmget' command");
-            }
+        protected boolean validate(String[] args) {
+            return args != null && args.length >= 2;
+        }
+
+        @Override
+        protected RedisMessage doExecute(String[] args) {
             String key = args[0];
             String[] fields = Arrays.copyOfRange(args, 1, args.length);
             String[] values = dataStore.hMGet(key, fields);
@@ -360,7 +359,8 @@ public class HashCommands {
 
     // ==================== HINCRBY ====================
 
-    public static class HashHIncrByCommand implements Command {
+    @RedisCommand(name = "HINCRBY", arity = 4)
+    public static class HashHIncrByCommand extends AbstractCommand {
         private final DataStore dataStore;
 
         public HashHIncrByCommand(DataStore dataStore) {
@@ -378,22 +378,10 @@ public class HashCommands {
         }
 
         @Override
-        public RedisMessage execute(String[] args) {
-            if (args.length < 3) {
-                return RedisMessageHelper.error("ERR", "wrong number of arguments for 'hincrby' command");
-            }
-            long delta;
-            try {
-                delta = Long.parseLong(args[2]);
-            } catch (NumberFormatException e) {
-                return RedisMessageHelper.error("ERR", "value is not an integer or out of range");
-            }
-            try {
-                long result = dataStore.hIncrBy(args[0], args[1], delta);
-                return RedisMessageHelper.integer(result);
-            } catch (Exception e) {
-                return RedisMessageHelper.error("ERR", e.getMessage());
-            }
+        protected RedisMessage doExecute(String[] args) {
+            long delta = Long.parseLong(args[2]);
+            long result = dataStore.hIncrBy(args[0], args[1], delta);
+            return RedisMessageHelper.integer(result);
         }
     }
 }
