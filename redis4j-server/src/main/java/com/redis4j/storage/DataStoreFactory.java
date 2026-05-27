@@ -32,6 +32,10 @@ public final class DataStoreFactory {
             case ECLIPSE_COLLECTIONS:
                 return new EclipseCollectionsStore();
 
+            case CAFFEINE:
+                int max =  10000;
+                return new CaffeineStore(max);
+
             default:
                 throw new IllegalArgumentException("Unknown storage type: " + type);
         }

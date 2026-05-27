@@ -17,5 +17,10 @@ public enum StorageType {
     /**
      * Eclipse Collections 存储
      */
-    ECLIPSE_COLLECTIONS
+    ECLIPSE_COLLECTIONS,
+
+    /**
+     * Caffeine 缓存存储
+     */
+    CAFFEINE
 }

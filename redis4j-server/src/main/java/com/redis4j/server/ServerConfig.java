@@ -17,6 +17,7 @@ public class ServerConfig {
     private String dataDir = "./data";
     private boolean daemon = false;
     private StorageType dataStoreType = StorageType.PARTITIONED;
+    private long cacheMaxSize = 10000;
 
     public ServerConfig() {
     }
@@ -95,6 +96,14 @@ public class ServerConfig {
 
     public boolean isDaemon() {
         return daemon;
+    }
+
+    public long getCacheMaxSize() {
+        return cacheMaxSize;
+    }
+
+    public void setCacheMaxSize(long cacheMaxSize) {
+        this.cacheMaxSize = cacheMaxSize;
     }
 
     public void setDaemon(boolean daemon) {

@@ -43,7 +43,7 @@ public class CommandScanner {
                     logger.warn("Command {} already registered, skipping", name);
                 } else {
                     commands.put(name, cmd);
-                    logger.debug("Registered command: {}", name);
+                    // logger.debug("Registered command: {}", name);
                 }
             });
         }
