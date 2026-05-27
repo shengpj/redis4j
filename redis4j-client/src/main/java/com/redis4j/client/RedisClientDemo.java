@@ -162,6 +162,15 @@ public class RedisClientDemo {
                 yield type != null ? type : "none";
             }
             case "INFO" -> "Redis4J 1.0.0";
+            case "SAVE" -> {
+                commands.save();
+                yield "OK";
+            }
+            case "BGSAVE" -> {
+                commands.bgSave();
+                yield "Background saving started";
+            }
+            case "LASTSAVE" -> String.valueOf(commands.lastSave());
             default -> "(error) unknown command '" + cmd + "'";
         };
     }

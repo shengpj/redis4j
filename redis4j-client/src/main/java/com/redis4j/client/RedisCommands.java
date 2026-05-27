@@ -275,6 +275,21 @@ public class RedisCommands {
         return getInteger(response);
     }
 
+    // ==================== 服务器命令 ====================
+
+    public void save() throws InterruptedException {
+        client.sendCommand("SAVE");
+    }
+
+    public void bgSave() throws InterruptedException {
+        client.sendCommand("BGSAVE");
+    }
+
+    public long lastSave() throws InterruptedException {
+        RedisMessage response = client.sendCommand("LASTSAVE");
+        return getInteger(response);
+    }
+
     // ==================== 辅助方法 ====================
 
     private String getString(RedisMessage response) {
