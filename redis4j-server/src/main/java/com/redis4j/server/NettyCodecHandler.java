@@ -49,14 +49,16 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
 
         logger.debug("Executing command: {} {}", parsed.name(), List.of(parsed.args()));
 
+        // 写回操作切回 EventLoop 线程，避免 Netty 内部跨线程调度
+        var executor = ctx.executor();
         try {
             commandExecutor.submit(() -> {
                 try {
                     RedisMessage response = commandRegistry.execute(parsed.name(), parsed.args());
-                    ctx.writeAndFlush(response);
+                    executor.execute(() -> ctx.writeAndFlush(response));
                 } catch (Exception e) {
                     logger.error("Error processing command", e);
-                    ctx.writeAndFlush(RedisMessageHelper.error("ERR", e.getMessage()));
+                    executor.execute(() -> ctx.writeAndFlush(RedisMessageHelper.error("ERR", e.getMessage())));
                 }
             });
         } catch (RejectedExecutionException e) {
