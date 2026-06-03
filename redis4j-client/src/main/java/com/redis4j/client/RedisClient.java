@@ -78,6 +78,11 @@ public class RedisClient {
                         pipeline.addLast(new SimpleChannelInboundHandler<RedisMessage>() {
                             @Override
                             protected void channelRead0(ChannelHandlerContext ctx, RedisMessage msg) throws Exception {
+                                // 服务端心跳 PING → 自动回复 PONG
+                                if (msg instanceof SimpleStringRedisMessage s && "PING".equalsIgnoreCase(s.content())) {
+                                    ctx.writeAndFlush(RedisMessageHelper.simpleString("PONG"));
+                                    return;
+                                }
                                 RedisMessage copy = RedisMessageUtil.deepCopy(msg);
                                 synchronized (responseLock) {
                                     pendingResponses.add(copy);

@@ -15,6 +15,7 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.redis.*;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
+import io.netty.handler.timeout.IdleStateHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -105,6 +106,9 @@ public class RedisServer {
                     @Override
                     protected void initChannel(SocketChannel ch) throws Exception {
                         ChannelPipeline pipeline = ch.pipeline();
+
+                        // 空闲超时：60 秒无读事件自动关连，防止半连接占用资源
+                        pipeline.addLast(new IdleStateHandler(30, 0, 0, TimeUnit.SECONDS));
 
                         // 使用 Netty codec-redis
                         pipeline.addLast(new RedisDecoder());

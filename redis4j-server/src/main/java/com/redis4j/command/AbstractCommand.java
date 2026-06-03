@@ -86,11 +86,30 @@ public abstract class AbstractCommand implements Command {
     }
 
     /**
+     * 将 RedisMessage 转为可读的日志文本
+     */
+    private String formatResult(RedisMessage msg) {
+        if (msg == null) return "null";
+        if (msg instanceof io.netty.handler.codec.redis.SimpleStringRedisMessage s) return s.content();
+        if (msg instanceof io.netty.handler.codec.redis.ErrorRedisMessage e) return "ERR " + e.content();
+        if (msg instanceof io.netty.handler.codec.redis.IntegerRedisMessage i) return String.valueOf(i.value());
+        if (msg instanceof io.netty.handler.codec.redis.FullBulkStringRedisMessage b) {
+            if (b.isNull()) return "(nil)";
+            return b.content().toString(java.nio.charset.StandardCharsets.UTF_8);
+        }
+        if (msg instanceof io.netty.handler.codec.redis.ArrayRedisMessage a) {
+            if (a.isNull()) return "(nil)";
+            return a.children().size() + " elements";
+        }
+        return msg.getClass().getSimpleName();
+    }
+
+    /**
      * 记录命令执行日志（可选重写）
      */
     protected void logExecution(String[] args, RedisMessage result) {
         if (logger.isDebugEnabled()) {
-            logger.debug("Executed {} with args={}, result={}", getName(), java.util.Arrays.toString(args), result.getClass().getSimpleName());
+            logger.debug("Executed {} with args={}, result={}", getName(), java.util.Arrays.toString(args), formatResult(result));
         }
     }
 }

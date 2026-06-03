@@ -6,6 +6,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.redis.*;
+import io.netty.handler.timeout.IdleStateEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,10 +33,21 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
         this.commandExecutor = commandExecutor;
     }
 
+    private volatile boolean heartbeatPending;
+
     private record ParsedCommand(String name, String[] args) {}
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, RedisMessage msg) {
+        // 收到任何数据都说明客户端活着，清除心跳标记
+        heartbeatPending = false;
+
+        // 服务端心跳 PONG 应答，不往下处理
+        if (msg instanceof SimpleStringRedisMessage s && "PONG".equalsIgnoreCase(s.content())) {
+            logger.trace("Received heartbeat PONG from {}", ctx.channel().remoteAddress());
+            return;
+        }
+
         ParsedCommand parsed = parseMessage(msg);
         if (parsed == null) {
             ctx.writeAndFlush(RedisMessageHelper.error("ERR", "protocol error: expected array"));
@@ -121,5 +133,21 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         logger.error("Exception in NettyCodecHandler", cause);
         ctx.close();
+    }
+
+    @Override
+    public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
+        if (evt instanceof IdleStateEvent) {
+            if (heartbeatPending) {
+                // 上次心跳无回应 → 断开
+                logger.warn("No heartbeat response, closing: {}", ctx.channel().remoteAddress());
+                ctx.close();
+            } else {
+                // 30 秒无读事件，发 PING 探活
+                heartbeatPending = true;
+                logger.debug("Sending heartbeat ping to {}", ctx.channel().remoteAddress());
+                ctx.writeAndFlush(RedisMessageHelper.simpleString("PING"));
+            }
+        }
     }
 }
