@@ -127,7 +127,7 @@ public class RedisClientDemo {
             case "HSET" -> {
                 if (args.length < 3) throw new IllegalArgumentException("wrong number of arguments");
                 long count = 0;
-                for (int i = 2; i < args.length; i += 2) {
+                for (int i = 1; i < args.length; i += 2) {
                     if (i + 1 < args.length) {
                         commands.hSet(args[0], args[i], args[i + 1]);
                         count++;
