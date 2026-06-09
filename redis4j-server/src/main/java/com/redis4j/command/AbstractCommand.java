@@ -17,7 +17,7 @@ public abstract class AbstractCommand implements Command {
     public final RedisMessage execute(String[] args) {
         // 1. 参数校验
         if (!validate(args)) {
-            return RedisMessageHelper.error("ERR", getValidationErrorMessage());
+            return RedisMessageHelper.error("ERR " + getValidationErrorMessage());
         }
 
         // 2. 执行命令
@@ -27,10 +27,10 @@ public abstract class AbstractCommand implements Command {
             logExecution(args, result);
             return result;
         } catch (IllegalArgumentException e) {
-            return RedisMessageHelper.error("ERR", e.getMessage());
+            return RedisMessageHelper.error("ERR " + e.getMessage());
         } catch (Exception e) {
             logger.error("Error executing command: {}", getName(), e);
-            return RedisMessageHelper.error("ERR", e.getMessage());
+            return RedisMessageHelper.error("ERR " + e.getMessage());
         }
     }
 
@@ -91,7 +91,7 @@ public abstract class AbstractCommand implements Command {
     private String formatResult(RedisMessage msg) {
         if (msg == null) return "null";
         if (msg instanceof io.netty.handler.codec.redis.SimpleStringRedisMessage s) return s.content();
-        if (msg instanceof io.netty.handler.codec.redis.ErrorRedisMessage e) return "ERR " + e.content();
+        if (msg instanceof io.netty.handler.codec.redis.ErrorRedisMessage e) return e.content();
         if (msg instanceof io.netty.handler.codec.redis.IntegerRedisMessage i) return String.valueOf(i.value());
         if (msg instanceof io.netty.handler.codec.redis.FullBulkStringRedisMessage b) {
             if (b.isNull()) return "(nil)";

@@ -47,14 +47,14 @@ public class CommandRegistry {
     public RedisMessage execute(String commandName, String[] args) {
         Command command = find(commandName);
         if (command == null) {
-            return RedisMessageHelper.error("ERR", "unknown command '" + commandName + "'");
+            return RedisMessageHelper.error("ERR unknown command '" + commandName + "'");
         }
 
         try {
             return command.execute(args);
         } catch (Exception e) {
             logger.error("Error executing command: {}", commandName, e);
-            return RedisMessageHelper.error("ERR", e.getMessage());
+            return RedisMessageHelper.error("ERR " + e.getMessage());
         }
     }
 

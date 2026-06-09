@@ -42,6 +42,18 @@
             <artifactId>junit-jupiter</artifactId>
         </dependency>
 
+        <!-- JLine for interactive CLI -->
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-reader</artifactId>
+            <version>3.27.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-terminal-jni</artifactId>
+            <version>3.27.1</version>
+        </dependency>
+
         <!-- Logback for demo -->
         <dependency>
             <groupId>ch.qos.logback</groupId>

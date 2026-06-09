@@ -45,7 +45,12 @@ public class PartitionedMemoryStore implements DataStore {
     }
 
     private int getPartitionIndex(String key) {
-        return Math.abs(key.hashCode()) % numPartitions;
+        return hash(key) % numPartitions;
+    }
+
+    private static int hash(String key) {
+        int h = key.hashCode();
+        return h ^ (h >>> 16);
     }
 
     private Partition getPartition(String key) {
@@ -264,30 +269,33 @@ public class PartitionedMemoryStore implements DataStore {
 
     @Override
     public void rename(String key, String newKey) {
+        if (key.equals(newKey)) return;
+
         Partition p1 = getPartition(key);
         Partition p2 = getPartition(newKey);
 
-        if (p1 == p2) {
-            Entry entry = p1.store.remove(key);
-            if (entry != null) {
+        p1.store.compute(key, (k, entry) -> {
+            if (entry == null) {
+                return null;
+            }
+            // 同分区：直接移动
+            if (p1 == p2) {
                 p1.store.put(newKey, entry);
-                if (entry.isPersistent()) {
-                    p1.expiryIndex.remove(key);
+                p1.expiryIndex.remove(k);
+                if (!entry.isPersistent()) {
                     p1.expiryIndex.put(newKey, entry.getExpireAt());
                 }
+                return null;
             }
-        } else {
-            Entry entry = p1.store.remove(key);
-            if (entry != null) {
-                p2.store.put(newKey, entry);
-                if (entry.isPersistent()) {
-                    p1.expiryIndex.remove(key);
-                    p2.expiryIndex.put(newKey, entry.getExpireAt());
-                } else {
-                    p1.expiryIndex.remove(key);
-                }
+            // 跨分区：先放目标，再删除源
+            p2.store.put(newKey, entry);
+            if (entry.isPersistent()) {
+                p2.expiryIndex.put(newKey, -1L);
+            } else {
+                p2.expiryIndex.put(newKey, entry.getExpireAt());
             }
-        }
+            return null;
+        });
     }
 
     @Override
@@ -650,35 +658,41 @@ public class PartitionedMemoryStore implements DataStore {
         Partition srcP = getPartition(srcKey);
         Partition destP = getPartition(destKey);
 
-        Entry srcEntry = srcP.store.get(srcKey);
-        if (srcEntry == null || srcEntry.isExpired() || !(srcEntry.getValue() instanceof RedisSet)) {
-            return false;
-        }
+        final boolean[] result = {false};
+        srcP.store.computeIfPresent(srcKey, (k, entry) -> {
+            if (entry == null || entry.isExpired() || !(entry.getValue() instanceof RedisSet srcSet)) {
+                return entry;
+            }
+            if (!srcSet.contains(member)) {
+                return entry;
+            }
 
-        RedisSet srcSet = (RedisSet) srcEntry.getValue();
-        if (!srcSet.contains(member)) {
-            return false;
-        }
+            // 在返回新 entry 之前，先向目标写入 member
+            Entry destEntry = destP.store.get(destKey);
+            if (destEntry != null && destEntry.isExpired()) {
+                destEntry = null;
+            }
+            RedisSet destSet;
+            if (destEntry == null) {
+                destSet = new RedisSet();
+                destP.store.put(destKey, new Entry(destSet, -1));
+            } else if (destEntry.getValue() instanceof RedisSet s) {
+                destSet = new RedisSet(s.getSet());
+            } else {
+                return entry; // 类型不匹配，不做任何修改
+            }
+            destSet.add(member);
 
-        srcSet.remove(member);
-        if (srcSet.isEmpty()) {
-            srcP.store.remove(srcKey);
-        }
-
-        Entry destEntry = destP.store.get(destKey);
-        RedisSet destSet;
-        if (destEntry == null || destEntry.isExpired()) {
-            destSet = new RedisSet();
-            long expireAt = destEntry != null ? destEntry.getExpireAt() : -1;
-            destP.store.put(destKey, new Entry(destSet, expireAt));
-        } else if (destEntry.getValue() instanceof RedisSet) {
-            destSet = (RedisSet) destEntry.getValue();
-        } else {
-            return false;
-        }
-
-        destSet.add(member);
-        return true;
+            result[0] = true;
+            // 从源创建去重的新集合
+            Set<String> newSrc = new HashSet<>(srcSet.getSet());
+            newSrc.remove(member);
+            if (newSrc.isEmpty()) {
+                return null; // 集合为空，删除源 key
+            }
+            return new Entry(new RedisSet(newSrc), entry.getExpireAt());
+        });
+        return result[0];
     }
 
     @Override
@@ -762,9 +776,13 @@ public class PartitionedMemoryStore implements DataStore {
         long now = System.currentTimeMillis();
         for (Partition p : partitions) {
             for (Map.Entry<String, Long> entry : p.expiryIndex.entrySet()) {
-                if (entry.getValue() < now) {
-                    p.store.remove(entry.getKey());
-                    p.expiryIndex.remove(entry.getKey());
+                Long expireAt = entry.getValue();
+                if (expireAt != null && expireAt < now) {
+                    String key = entry.getKey();
+                    // CAS 删除：只有过期时间未变时才清理，避免误删刚刷新过期时间的 key
+                    if (p.expiryIndex.remove(key, expireAt)) {
+                        p.store.remove(key);
+                    }
                 }
             }
         }

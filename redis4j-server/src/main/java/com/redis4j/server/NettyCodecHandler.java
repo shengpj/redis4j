@@ -50,12 +50,12 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
 
         ParsedCommand parsed = parseMessage(msg);
         if (parsed == null) {
-            ctx.writeAndFlush(RedisMessageHelper.error("ERR", "protocol error: expected array"));
+            ctx.writeAndFlush(RedisMessageHelper.error("ERR protocol error: expected array"));
             return;
         }
 
         if (parsed.name().isEmpty()) {
-            ctx.writeAndFlush(RedisMessageHelper.error("ERR", "empty command"));
+            ctx.writeAndFlush(RedisMessageHelper.error("ERR empty command"));
             return;
         }
 
@@ -70,11 +70,11 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
                     executor.execute(() -> ctx.writeAndFlush(response));
                 } catch (Exception e) {
                     logger.error("Error processing command", e);
-                    executor.execute(() -> ctx.writeAndFlush(RedisMessageHelper.error("ERR", e.getMessage())));
+                    executor.execute(() -> ctx.writeAndFlush(RedisMessageHelper.error("ERR " + e.getMessage())));
                 }
             });
         } catch (RejectedExecutionException e) {
-            ctx.writeAndFlush(RedisMessageHelper.error("ERR", "server is busy, try again later"));
+            ctx.writeAndFlush(RedisMessageHelper.error("ERR server is busy, try again later"));
         }
     }
 

@@ -187,10 +187,14 @@ public class CaffeineStore implements DataStore {
 
     @Override
     public void rename(String key, String newKey) {
-        Entry entry = map().remove(key);
-        if (entry != null) {
+        if (key.equals(newKey)) return;
+        map().compute(key, (k, entry) -> {
+            if (entry == null) {
+                return null;
+            }
             map().put(newKey, entry);
-        }
+            return null;
+        });
     }
 
     @Override
@@ -464,30 +468,38 @@ public class CaffeineStore implements DataStore {
 
     @Override
     public boolean sMove(String srcKey, String destKey, String member) {
-        boolean[] moved = {false};
+        final boolean[] result = {false};
         map().computeIfPresent(srcKey, (k, entry) -> {
-            if (!(entry.getValue() instanceof RedisSet set)) return entry;
-            if (!set.contains(member)) return entry;
-
-            RedisSet newSet = new RedisSet(set.getSet());
-            newSet.remove(member);
-            moved[0] = true;
-            return newSet.isEmpty() ? null : new Entry(newSet);
-        });
-        if (!moved[0]) return false;
-
-        map().compute(destKey, (k, entry) -> {
-            if (entry == null) {
-                RedisSet set = new RedisSet();
-                set.add(member);
-                return new Entry(set);
+            if (entry == null || !(entry.getValue() instanceof RedisSet srcSet)) {
+                return entry;
             }
-            if (!(entry.getValue() instanceof RedisSet set)) return entry;
-            RedisSet newSet = new RedisSet(set.getSet());
-            newSet.add(member);
-            return new Entry(newSet);
+            if (!srcSet.contains(member)) {
+                return entry;
+            }
+
+            // 在 computeIfPresent 锁内完成目标写入
+            Entry destEntry = map().get(destKey);
+            RedisSet destSet;
+            if (destEntry == null) {
+                destSet = new RedisSet();
+                map().put(destKey, new Entry(destSet));
+            } else if (destEntry.getValue() instanceof RedisSet s) {
+                destSet = new RedisSet(s.getSet());
+            } else {
+                return entry; // 类型不匹配，不做任何修改
+            }
+            destSet.add(member);
+
+            result[0] = true;
+            // 从源创建去重的新集合
+            Set<String> newSrc = new HashSet<>(srcSet.getSet());
+            newSrc.remove(member);
+            if (newSrc.isEmpty()) {
+                return null; // 集合为空，删除源 key
+            }
+            return new Entry(new RedisSet(newSrc));
         });
-        return true;
+        return result[0];
     }
 
     @Override

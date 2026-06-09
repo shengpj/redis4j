@@ -140,6 +140,30 @@ public class RedisCommands {
         client.sendCommand("FLUSHALL");
     }
 
+    public void select(int index) throws InterruptedException {
+        client.sendCommand("SELECT", String.valueOf(index));
+    }
+
+    public void rename(String oldKey, String newKey) throws InterruptedException {
+        client.sendCommand("RENAME", oldKey, newKey);
+    }
+
+    public boolean persist(String key) throws InterruptedException {
+        RedisMessage response = client.sendCommand("PERSIST", key);
+        return getInteger(response) == 1;
+    }
+
+    public boolean expireAt(String key, long timestamp) throws InterruptedException {
+        RedisMessage response = client.sendCommand("EXPIREAT", key, String.valueOf(timestamp));
+        return getInteger(response) == 1;
+    }
+
+    public String time() throws InterruptedException {
+        List<RedisMessage> array = RedisMessageHelper.extractArray(client.sendCommand("TIME"));
+        if (array == null || array.isEmpty()) return "(nil)";
+        return String.join(" ", getStringArray(client.sendCommand("TIME")));
+    }
+
     public String ping() throws InterruptedException {
         RedisMessage response = client.sendCommand("PING");
         return getString(response);

@@ -35,7 +35,7 @@ public class ServerCommands {
         @Override
         protected RedisMessage doExecute(String[] args) {
             if (pm.isSaving()) {
-                return RedisMessageHelper.error("ERR", "BGSAVE already in progress");
+                return RedisMessageHelper.error("ERR BGSAVE already in progress");
             }
             pm.save();
             return RedisMessageHelper.ok();
@@ -66,7 +66,7 @@ public class ServerCommands {
         @Override
         protected RedisMessage doExecute(String[] args) {
             if (pm.isSaving()) {
-                return RedisMessageHelper.error("ERR", "BGSAVE already in progress");
+                return RedisMessageHelper.error("ERR BGSAVE already in progress");
             }
             pm.bgSaveManual();
             return RedisMessageHelper.simpleString("Background saving started");

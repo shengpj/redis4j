@@ -73,7 +73,8 @@ public class RedisClient {
 
                         // 使用 Netty codec-redis
                         pipeline.addLast(new RedisDecoder());
-                        pipeline.addLast(new RedisBulkStringAggregator()); // 客户端也需要聚合 bulk string
+                        pipeline.addLast(new RedisBulkStringAggregator()); // 聚合 bulk string header+content
+                        pipeline.addLast(new RedisInboundArrayAggregator());
                         pipeline.addLast(new RedisEncoder());
                         pipeline.addLast(new SimpleChannelInboundHandler<RedisMessage>() {
                             @Override

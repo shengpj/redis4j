@@ -234,14 +234,21 @@ public class MemoryStore implements DataStore {
 
     @Override
     public void rename(String key, String newKey) {
-        Entry entry = store.remove(key);
-        if (entry != null) {
+        store.compute(key, (k, entry) -> {
+            if (entry == null) {
+                return null; // 源 key 不存在，不做任何操作
+            }
+            if (k.equals(newKey)) {
+                return entry; // 同源同 key，不操作
+            }
+            // 原子地将 entry 从 key 迁移到 newKey
             store.put(newKey, entry);
-            if (entry.isPersistent()) {
-                expiryIndex.remove(key);
+            expiryIndex.remove(k);
+            if (!entry.isPersistent()) {
                 expiryIndex.put(newKey, entry.getExpireAt());
             }
-        }
+            return null; // 删除源 key
+        });
     }
 
     @Override
@@ -584,43 +591,42 @@ public class MemoryStore implements DataStore {
 
     @Override
     public boolean sMove(String srcKey, String destKey, String member) {
-        // 原子地从源集合中移除
-        boolean[] moved = {false};
+        final boolean[] result = {false};
         store.computeIfPresent(srcKey, (k, entry) -> {
-            if (entry == null || entry.isExpired() || !(entry.getValue() instanceof RedisSet set)) {
+            if (entry == null || entry.isExpired() || !(entry.getValue() instanceof RedisSet srcSet)) {
                 return entry;
             }
-            if (!set.getSet().contains(member)) {
+            if (!srcSet.contains(member)) {
                 return entry;
             }
-            RedisSet newSet = new RedisSet(set.getSet());
-            newSet.remove(member);
-            moved[0] = true;
 
-            if (newSet.isEmpty()) {
-                expiryIndex.remove(k);
-                return null;
+            // 在返回新 entry 前，先向目标写入 member（同 computeIfPresent 锁内）
+            Entry destEntry = store.get(destKey);
+            if (destEntry != null && destEntry.isExpired()) {
+                destEntry = null;
             }
-            return new Entry(newSet, entry.getExpireAt());
-        });
-
-        if (!moved[0]) return false;
-
-        // 原子地添加到目标集合
-        store.compute(destKey, (k, entry) -> {
-            if (entry == null || entry.isExpired()) {
-                RedisSet newSet = new RedisSet();
-                newSet.add(member);
-                return new Entry(newSet);
+            RedisSet destSet;
+            if (destEntry == null) {
+                destSet = new RedisSet();
+                store.put(destKey, new Entry(destSet));
+            } else if (destEntry.getValue() instanceof RedisSet s) {
+                destSet = new RedisSet(s.getSet());
+            } else {
+                return entry; // 类型不匹配，不做任何修改
             }
-            if (!(entry.getValue() instanceof RedisSet destSet)) return entry;
+            destSet.add(member);
 
-            RedisSet newSet = new RedisSet(destSet.getSet());
-            newSet.add(member);
-            return new Entry(newSet, entry.getExpireAt());
+            result[0] = true;
+            expiryIndex.remove(k);
+            // 从源创建去重的新集合
+            Set<String> newSrc = new HashSet<>(srcSet.getSet());
+            newSrc.remove(member);
+            if (newSrc.isEmpty()) {
+                return null; // 集合为空，删除源 key
+            }
+            return new Entry(new RedisSet(newSrc), entry.getExpireAt());
         });
-
-        return true;
+        return result[0];
     }
 
     @Override

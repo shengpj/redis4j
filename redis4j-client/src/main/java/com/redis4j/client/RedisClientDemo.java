@@ -1,12 +1,23 @@
 package com.redis4j.client;
 
+import org.jline.reader.*;
+import org.jline.reader.impl.history.DefaultHistory;
+import org.jline.terminal.Terminal;
+import org.jline.terminal.TerminalBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Scanner;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
- * Redis 命令行客户端
+ * Redis 命令行客户端（JLine）
  */
 public class RedisClientDemo {
 
@@ -20,23 +31,50 @@ public class RedisClientDemo {
         RedisClient client = new RedisClient(host, port);
         RedisCommands commands = new RedisCommands(client);
 
-        try {
-            client.connect();
+        Path historyFile = Path.of(System.getProperty("user.home"), ".redis4j_history");
+        DefaultHistory history = new DefaultHistory();
+
+        try (Terminal terminal = TerminalBuilder.builder()
+                .system(true)
+                .jna(true)
+                .build()) {
+            LineReader reader = LineReaderBuilder.builder()
+                    .terminal(terminal)
+                    .history(history)
+                    .variable(LineReader.HISTORY_FILE, historyFile.toString())
+                    .build();
+
+            try {
+                client.connect();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                logger.warn("Connection interrupted");
+                return;
+            }
             if (!client.isConnected()) {
                 logger.error("Failed to connect to Redis server at {}:{}", host, port);
                 return;
             }
-            logger.info("Connected to Redis4J server at {}:{}", host, port);
-            logger.info("Type 'exit' to quit, 'help' for command format");
+            terminal.writer().println("Connected to Redis4J server at " + host + ":" + port);
 
-            Scanner scanner = new Scanner(System.in);
+            String lastInput = null;
             while (true) {
-                System.out.print(PROMPT);
-                String line = scanner.nextLine().trim();
+                lastInput = null;
+                try {
+                    lastInput = reader.readLine(PROMPT);
+                } catch (UserInterruptException e) {
+                    continue;
+                } catch (EndOfFileException e) {
+                    terminal.writer().println();
+                    logger.info("Goodbye!");
+                    break;
+                }
 
-                if (line.isEmpty()) {
+                if (lastInput == null || lastInput.trim().isEmpty()) {
                     continue;
                 }
+
+                String line = lastInput.trim();
 
                 if (line.equalsIgnoreCase("exit") || line.equalsIgnoreCase("quit")) {
                     logger.info("Goodbye!");
@@ -50,21 +88,26 @@ public class RedisClientDemo {
 
                 try {
                     String result = executeCommand(commands, line);
-                    System.out.println(result);
+                    if (result != null && !result.isEmpty()) {
+                        terminal.writer().println(result);
+                    }
                 } catch (Exception e) {
-                    System.out.println("(error) " + e.getMessage());
+                    terminal.writer().println("(error) " + e.getMessage());
                 }
             }
 
-        } catch (Exception e) {
+        } catch (IOException e) {
             logger.error("Error: {}", e.getMessage(), e);
         } finally {
+            try {
+                history.write(historyFile, true);
+            } catch (IOException ignored) {}
             client.disconnect();
         }
     }
 
     private static String executeCommand(RedisCommands commands, String line) throws Exception {
-        String[] parts = parseCommand(line);
+        String[] parts = tokenize(line);
         if (parts.length == 0) {
             return "";
         }
@@ -98,6 +141,10 @@ public class RedisClientDemo {
                 commands.flushDb();
                 yield "OK";
             }
+            case "FLUSHALL" -> {
+                commands.flushAll();
+                yield "OK";
+            }
             case "KEYS" -> {
                 if (args.length < 1) throw new IllegalArgumentException("wrong number of arguments");
                 var keys = commands.keys(args[0]);
@@ -107,6 +154,33 @@ public class RedisClientDemo {
             case "DECR" -> String.valueOf(commands.decr(args[0]));
             case "INCRBY" -> String.valueOf(commands.incrBy(args[0], Long.parseLong(args[1])));
             case "DECRBY" -> String.valueOf(commands.decrBy(args[0], Long.parseLong(args[1])));
+            case "STRLEN" -> {
+                if (args.length < 1) throw new IllegalArgumentException("wrong number of arguments");
+                yield String.valueOf(commands.strlen(args[0]));
+            }
+            case "APPEND" -> {
+                if (args.length < 2) throw new IllegalArgumentException("wrong number of arguments");
+                yield String.valueOf(commands.append(args[0], args[1]));
+            }
+            case "SETNX" -> {
+                if (args.length < 2) throw new IllegalArgumentException("wrong number of arguments");
+                yield String.valueOf(commands.setNx(args[0], args[1]));
+            }
+            case "MGET" -> {
+                if (args.length < 1) throw new IllegalArgumentException("wrong number of arguments");
+                String[] values = commands.mGet(args);
+                if (values.length == 0) yield "(nil)";
+                yield String.join(" ", values);
+            }
+            case "MSET" -> {
+                if (args.length < 2) throw new IllegalArgumentException("wrong number of arguments");
+                Map<String, String> map = new LinkedHashMap<>();
+                for (int i = 0; i < args.length; i += 2) {
+                    if (i + 1 < args.length) map.put(args[i], args[i + 1]);
+                }
+                commands.mSet(map);
+                yield "OK";
+            }
             case "LPUSH", "RPUSH" -> {
                 if (args.length < 2) throw new IllegalArgumentException("wrong number of arguments");
                 long count = cmd.equals("LPUSH") ? commands.lPush(args[0], java.util.Arrays.copyOfRange(args, 1, args.length))
@@ -135,6 +209,10 @@ public class RedisClientDemo {
                 }
                 yield String.valueOf(count);
             }
+            case "HSETNX" -> {
+                if (args.length < 3) throw new IllegalArgumentException("wrong number of arguments");
+                yield String.valueOf(commands.hSetNx(args[0], args[1], args[2]));
+            }
             case "HGET" -> {
                 if (args.length < 2) throw new IllegalArgumentException("wrong number of arguments");
                 String result = commands.hGet(args[0], args[1]);
@@ -150,7 +228,20 @@ public class RedisClientDemo {
                 map.forEach((k, v) -> sb.append(k).append("=").append(v).append(" "));
                 yield sb.toString().trim();
             }
+            case "HDEL" -> {
+                if (args.length < 1) throw new IllegalArgumentException("wrong number of arguments");
+                String key = args[0];
+                String[] fields = java.util.Arrays.copyOfRange(args, 1, args.length);
+                long n = commands.hDel(key, fields);
+                yield Long.toString(n);
+            }
+            case "HEXISTS" -> {
+                if (args.length < 2) throw new IllegalArgumentException("wrong number of arguments");
+                yield String.valueOf(commands.hExists(args[0], args[1]));
+            }
+            case "HLEN" -> String.valueOf(commands.hLen(args[0]));
             case "SADD" -> String.valueOf(commands.sAdd(args[0], java.util.Arrays.copyOfRange(args, 1, args.length)));
+            case "SREM" -> String.valueOf(commands.sRem(args[0], java.util.Arrays.copyOfRange(args, 1, args.length)));
             case "SMEMBERS" -> {
                 var members = commands.sMembers(args[0]);
                 yield members.isEmpty() ? "(empty set)" : String.join(", ", members);
@@ -161,6 +252,17 @@ public class RedisClientDemo {
                 String type = commands.type(args[0]);
                 yield type != null ? type : "none";
             }
+            case "RENAME" -> {
+                if (args.length < 2) throw new IllegalArgumentException("wrong number of arguments");
+                commands.rename(args[0], args[1]);
+                yield "OK";
+            }
+            case "PERSIST" -> String.valueOf(commands.persist(args[0]));
+            case "EXPIREAT" -> {
+                if (args.length < 2) throw new IllegalArgumentException("wrong number of arguments");
+                yield String.valueOf(commands.expireAt(args[0], Long.parseLong(args[1])));
+            }
+            case "PTTL" -> String.valueOf(commands.pttl(args[0]));
             case "INFO" -> "Redis4J 1.0.0";
             case "SAVE" -> {
                 commands.save();
@@ -171,25 +273,35 @@ public class RedisClientDemo {
                 yield "Background saving started";
             }
             case "LASTSAVE" -> String.valueOf(commands.lastSave());
+            case "SELECT" -> {
+                if (args.length < 1) throw new IllegalArgumentException("wrong number of arguments");
+                commands.select(Integer.parseInt(args[0]));
+                yield "OK";
+            }
+            case "ECHO" -> {
+                if (args.length < 1) throw new IllegalArgumentException("wrong number of arguments");
+                yield commands.echo(args[0]);
+            }
+            case "TIME" -> commands.time();
             default -> "(error) unknown command '" + cmd + "'";
         };
     }
 
-    private static String[] parseCommand(String line) {
-        java.util.List<String> tokens = new java.util.ArrayList<>();
+    /**
+     * 简单的命令行 token 化，支持双引号内的空格
+     */
+    private static String[] tokenize(String line) {
+        List<String> tokens = new ArrayList<>();
         StringBuilder current = new StringBuilder();
         boolean inQuote = false;
-        char quoteChar = 0;
 
         for (int i = 0; i < line.length(); i++) {
             char c = line.charAt(i);
-
             if ((c == '"' || c == '\'') && !inQuote) {
                 inQuote = true;
-                quoteChar = c;
-            } else if (inQuote && c == quoteChar) {
+            } else if (inQuote && c == (inQuote ? c : 0)) {
                 inQuote = false;
-            } else if (!inQuote && c == ' ') {
+            } else if (!inQuote && Character.isWhitespace(c)) {
                 if (current.length() > 0) {
                     tokens.add(current.toString());
                     current = new StringBuilder();
@@ -198,22 +310,21 @@ public class RedisClientDemo {
                 current.append(c);
             }
         }
-
         if (current.length() > 0) {
             tokens.add(current.toString());
         }
-
         return tokens.toArray(new String[0]);
     }
 
     private static void printHelp() {
         System.out.println("""
             Supported commands:
-              String:  PING, GET, SET, SETEX, DEL, EXISTS, EXPIRE, TTL, INCR, DECR, INCRBY, DECRBY
+              String:  PING, GET, SET, SETEX, DEL, EXISTS, EXPIRE, TTL, INCR, DECR, INCRBY, DECRBY, STRLEN, APPEND, SETNX, MGET, MSET
+              Key:     KEYS, TYPE, DBSIZE, FLUSHDB, FLUSHALL, RENAME, PERSIST, EXPIREAT, PTTL
               List:    LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN
-              Hash:    HSET, HGET, HGETALL
-              Set:     SADD, SMEMBERS, SISMEMBER, SCARD
-              Server:  DBSIZE, FLUSHDB, KEYS, TYPE, INFO
+              Hash:    HSET, HSETNX, HGET, HGETALL, HDEL, HEXISTS, HLEN
+              Set:     SADD, SREM, SMEMBERS, SISMEMBER, SCARD
+              Server:  SELECT, ECHO, INFO, SAVE, BGSAVE, LASTSAVE, TIME
               Other:   exit, quit, help
             """);
     }

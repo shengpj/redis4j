@@ -248,14 +248,12 @@ public class EclipseCollectionsStore implements DataStore {
 
     @Override
     public void rename(String key, String newKey) {
-        Entry entry = store.removeKey(key);
-        if (entry != null) {
-            expiryIndex.remove(key);
+        if (key.equals(newKey)) return;
+        store.computeIfPresent(key, (k, entry) -> {
             store.put(newKey, entry);
-            if (!entry.isPersistent()) {
-                expiryIndex.put(newKey, entry.getExpireAt());
-            }
-        }
+            expiryIndex.remove(k);
+            return null;
+        });
     }
 
     @Override
@@ -617,21 +615,33 @@ public class EclipseCollectionsStore implements DataStore {
             return false;
         }
         RedisSet srcSet = (RedisSet) srcEntry.getValue();
-        if (!srcSet.contains(member)) return false;
-        srcSet.remove(member);
+        if (!srcSet.contains(member)) {
+            return false;
+        }
 
+        // 创建去重的新源集合（避免修改存储中的原始对象）
+        Set<String> newSrc = new HashSet<>(srcSet.getSet());
+        newSrc.remove(member);
+
+        // 先写入目标，失败则不做任何修改
         Entry destEntry = store.get(destKey);
         RedisSet destSet;
         if (destEntry == null || destEntry.isExpired()) {
             destSet = new RedisSet();
-            long expireAt = destEntry != null ? destEntry.getExpireAt() : -1;
-            store.put(destKey, new Entry(destSet, expireAt));
-        } else if (destEntry.getValue() instanceof RedisSet) {
-            destSet = (RedisSet) destEntry.getValue();
+            store.put(destKey, new Entry(destSet));
+        } else if (destEntry.getValue() instanceof RedisSet s) {
+            destSet = new RedisSet(s.getSet());
         } else {
             return false;
         }
         destSet.add(member);
+
+        // 全部写入成功，再更新源
+        if (newSrc.isEmpty()) {
+            store.remove(srcKey);
+        } else {
+            store.put(srcKey, new Entry(new RedisSet(newSrc), srcEntry.getExpireAt()));
+        }
         return true;
     }
 
