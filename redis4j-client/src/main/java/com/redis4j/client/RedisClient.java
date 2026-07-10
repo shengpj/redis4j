@@ -3,39 +3,56 @@ package com.redis4j.client;
 import com.redis4j.protocol.RedisMessageHelper;
 import com.redis4j.protocol.RedisMessageUtil;
 import io.netty.bootstrap.Bootstrap;
-import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
-import io.netty.channel.*;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.handler.codec.redis.*;
+import io.netty.handler.codec.redis.ArrayRedisMessage;
+import io.netty.handler.codec.redis.RedisBulkStringAggregator;
+import io.netty.handler.codec.redis.RedisDecoder;
+import io.netty.handler.codec.redis.RedisEncoder;
+import io.netty.handler.codec.redis.RedisMessage;
+import io.netty.handler.codec.redis.SimpleStringRedisMessage;
+import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.StandardCharsets;
+import java.nio.channels.ClosedChannelException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Queue;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 
-/**
- * Redis 客户端
- * 使用 Netty codec-redis 模块
- */
+/** Redis client based on Netty's RESP codec. */
 public class RedisClient {
-
     private static final Logger logger = LoggerFactory.getLogger(RedisClient.class);
+    private static final long COMMAND_TIMEOUT_SECONDS = 30;
 
     private final String host;
     private final int port;
+    private final Queue<PendingRequest> pendingRequests = new ConcurrentLinkedQueue<>();
+    private final Set<PendingRequest> outstandingRequests = ConcurrentHashMap.newKeySet();
 
-    private EventLoopGroup group;
-    private Channel channel;
-    private volatile boolean connected = false;
-
-    private final List<Object> pendingResponses = new ArrayList<>();
-    private final Object responseLock = new Object();
+    private volatile EventLoopGroup group;
+    private volatile Channel channel;
+    private volatile boolean connected;
 
     public RedisClient(String host, int port) {
         this.host = host;
@@ -50,155 +67,188 @@ public class RedisClient {
         this("localhost", 6379);
     }
 
-    /**
-     * 连接到服务端
-     */
-    public void connect() throws InterruptedException {
-        if (connected) {
+    public synchronized void connect() throws InterruptedException {
+        if (isConnected()) {
             return;
         }
 
-        group = new NioEventLoopGroup();
+        closeCurrentConnection();
 
+        EventLoopGroup newGroup = new NioEventLoopGroup(1);
+        group = newGroup;
         Bootstrap bootstrap = new Bootstrap();
-        bootstrap.group(group)
+        bootstrap.group(newGroup)
                 .channel(NioSocketChannel.class)
                 .option(ChannelOption.SO_KEEPALIVE, true)
                 .option(ChannelOption.TCP_NODELAY, true)
                 .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
                 .handler(new ChannelInitializer<SocketChannel>() {
                     @Override
-                    protected void initChannel(SocketChannel ch) throws Exception {
-                        ChannelPipeline pipeline = ch.pipeline();
-
-                        // 使用 Netty codec-redis
-                        pipeline.addLast(new RedisDecoder());
-                        pipeline.addLast(new RedisBulkStringAggregator()); // 聚合 bulk string header+content
-                        pipeline.addLast(new RedisInboundArrayAggregator());
-                        pipeline.addLast(new RedisEncoder());
-                        pipeline.addLast(new SimpleChannelInboundHandler<RedisMessage>() {
-                            @Override
-                            protected void channelRead0(ChannelHandlerContext ctx, RedisMessage msg) throws Exception {
-                                // 服务端心跳 PING → 自动回复 PONG
-                                if (msg instanceof SimpleStringRedisMessage s && "PING".equalsIgnoreCase(s.content())) {
-                                    ctx.writeAndFlush(RedisMessageHelper.simpleString("PONG"));
-                                    return;
-                                }
-                                RedisMessage copy = RedisMessageUtil.deepCopy(msg);
-                                synchronized (responseLock) {
-                                    pendingResponses.add(copy);
-                                    responseLock.notifyAll();
-                                }
-                            }
-                        });
+                    protected void initChannel(SocketChannel ch) {
+                        ch.pipeline().addLast(new RedisDecoder());
+                        ch.pipeline().addLast(new RedisBulkStringAggregator());
+                        ch.pipeline().addLast(new RedisInboundArrayAggregator());
+                        ch.pipeline().addLast(new RedisEncoder());
+                        ch.pipeline().addLast(new ResponseHandler());
                     }
                 });
 
-        ChannelFuture future = bootstrap.connect(host, port);
-        future.sync();
-
-        channel = future.channel();
-        connected = true;
-        logger.info("Connected to Redis server at {}:{}", host, port);
-
-        channel.closeFuture().addListener(f -> {
-            connected = false;
-            logger.info("Disconnected from Redis server");
-        });
-    }
-
-    /**
-     * 断开连接
-     */
-    public void disconnect() {
-        if (channel != null) {
-            channel.close();
-        }
-        if (group != null) {
-            group.shutdownGracefully();
-        }
-        connected = false;
-    }
-
-    /**
-     * 发送命令并获取响应
-     */
-    public RedisMessage sendCommand(String... args) throws InterruptedException {
-        if (!connected || channel == null) {
-            throw new IllegalStateException("Not connected to Redis server");
-        }
-
-        // 构建命令数组
-        RedisMessage request = buildArrayMessage(args);
-
-        // 清空之前的响应
-        synchronized (responseLock) {
-            pendingResponses.clear();
-        }
-
-        // 发送请求
-        channel.writeAndFlush(request).sync();
-
-        // 等待响应
-        long deadline = System.currentTimeMillis() + 30000;
-        while (true) {
-            long remaining = deadline - System.currentTimeMillis();
-            if (remaining <= 0) {
-                break;
-            }
-            synchronized (responseLock) {
-                if (!pendingResponses.isEmpty()) {
-                    return (RedisMessage) pendingResponses.remove(0);
+        ChannelFuture connectFuture = bootstrap.connect(host, port);
+        try {
+            connectFuture.sync();
+            channel = connectFuture.channel();
+            connected = true;
+            logger.info("Connected to Redis server at {}:{}", host, port);
+        } finally {
+            if (!connectFuture.isSuccess()) {
+                if (!connectFuture.isDone()) {
+                    connectFuture.cancel(true);
                 }
-                responseLock.wait(remaining);
+                connected = false;
+                channel = null;
+                newGroup.shutdownGracefully();
+                if (group == newGroup) {
+                    group = null;
+                }
             }
         }
-
-        return null;
     }
 
-    /**
-     * 异步发送命令
-     */
-    public void sendCommandAsync(Consumer<RedisMessage> callback, String... args) {
-        if (!connected || channel == null) {
-            throw new IllegalStateException("Not connected to Redis server");
+    public synchronized void disconnect() {
+        connected = false;
+        closeCurrentConnection();
+    }
+
+    private void closeCurrentConnection() {
+        Channel currentChannel = channel;
+        EventLoopGroup currentGroup = group;
+        channel = null;
+        group = null;
+        failPending(new ClosedChannelException());
+
+        if (currentChannel != null) {
+            if (currentChannel.eventLoop().inEventLoop()) {
+                currentChannel.close();
+            } else {
+                currentChannel.close().syncUninterruptibly();
+            }
+        }
+        if (currentGroup != null) {
+            if (currentChannel != null && currentChannel.eventLoop().inEventLoop()) {
+                currentGroup.shutdownGracefully(0, 5, TimeUnit.SECONDS);
+            } else {
+                currentGroup.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly();
+            }
+        }
+    }
+
+    public RedisMessage sendCommand(String... args) throws InterruptedException {
+        Channel currentChannel = requireActiveChannel();
+        if (currentChannel.eventLoop().inEventLoop()) {
+            throw new IllegalStateException("Blocking command cannot run on the Netty event loop");
         }
 
-        RedisMessage request = buildArrayMessage(args);
-        channel.writeAndFlush(request).addListener(future -> {
-            if (!future.isSuccess()) {
-                callback.accept(RedisMessageHelper.error("ERR", "send failed"));
+        try {
+            return sendCommandFuture(args).get();
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof TimeoutException) {
+                return null;
+            }
+            throw new IllegalStateException("Redis command failed", cause);
+        }
+    }
+
+    public void sendCommandAsync(Consumer<RedisMessage> callback, String... args) {
+        if (callback == null) {
+            throw new IllegalArgumentException("callback must not be null");
+        }
+        CompletableFuture<RedisMessage> future;
+        try {
+            future = sendCommandFuture(args);
+        } catch (RuntimeException e) {
+            callback.accept(RedisMessageHelper.error("ERR", e.getMessage()));
+            return;
+        }
+
+        future.whenCompleteAsync((response, error) -> {
+            if (error == null) {
+                callback.accept(response);
+            } else {
+                Throwable cause = error instanceof CompletionException && error.getCause() != null
+                        ? error.getCause() : error;
+                callback.accept(RedisMessageHelper.error("ERR", safeMessage(cause)));
             }
         });
+    }
 
-        // 异步等待响应
-        Thread responseThread = new Thread(() -> {
-            long deadline = System.currentTimeMillis() + 30000;
-            while (true) {
-                long remaining = deadline - System.currentTimeMillis();
-                if (remaining <= 0) {
-                    callback.accept(RedisMessageHelper.error("ERR", "timeout"));
+    public CompletableFuture<RedisMessage> sendCommandFuture(String... args) {
+        Channel currentChannel = requireActiveChannel();
+        RedisMessage request = buildArrayMessage(args);
+        PendingRequest pending = new PendingRequest();
+        outstandingRequests.add(pending);
+        if (!connected || channel != currentChannel || !currentChannel.isActive()) {
+            ReferenceCountUtil.release(request);
+            outstandingRequests.remove(pending);
+            pending.future.completeExceptionally(new ClosedChannelException());
+            return pending.future;
+        }
+
+        try {
+            currentChannel.eventLoop().execute(() -> {
+                if (pending.future.isDone()) {
+                    ReferenceCountUtil.release(request);
                     return;
                 }
-                synchronized (responseLock) {
-                    if (!pendingResponses.isEmpty()) {
-                        callback.accept((RedisMessage) pendingResponses.remove(0));
-                        return;
-                    }
-                    try {
-                        responseLock.wait(remaining);
-                    } catch (InterruptedException e) {
-                        callback.accept(RedisMessageHelper.error("ERR", "interrupted"));
-                        return;
-                    }
+                if (!currentChannel.isActive()) {
+                    ReferenceCountUtil.release(request);
+                    outstandingRequests.remove(pending);
+                    pending.future.completeExceptionally(new ClosedChannelException());
+                    return;
                 }
-            }
-        });
-        responseThread.start();
+
+                pendingRequests.add(pending);
+                pending.timeout = currentChannel.eventLoop().schedule(
+                        () -> timeoutRequest(currentChannel, pending),
+                        COMMAND_TIMEOUT_SECONDS,
+                        TimeUnit.SECONDS);
+
+                currentChannel.writeAndFlush(request).addListener(writeFuture -> {
+                    if (!writeFuture.isSuccess()) {
+                        failPending(writeFuture.cause());
+                        currentChannel.close();
+                    }
+                });
+            });
+        } catch (RejectedExecutionException e) {
+            ReferenceCountUtil.release(request);
+            outstandingRequests.remove(pending);
+            pending.future.completeExceptionally(e);
+        }
+        return pending.future;
+    }
+
+    private void timeoutRequest(Channel currentChannel, PendingRequest pending) {
+        if (pending.future.isDone()) {
+            return;
+        }
+        TimeoutException timeout = new TimeoutException("command timed out after " + COMMAND_TIMEOUT_SECONDS + " seconds");
+        failPending(timeout);
+        currentChannel.close();
+    }
+
+    private Channel requireActiveChannel() {
+        Channel currentChannel = channel;
+        if (!connected || currentChannel == null || !currentChannel.isActive()) {
+            throw new IllegalStateException("Not connected to Redis server");
+        }
+        return currentChannel;
     }
 
     private RedisMessage buildArrayMessage(String... args) {
+        if (args == null || args.length == 0) {
+            throw new IllegalArgumentException("command must not be empty");
+        }
         List<RedisMessage> items = new ArrayList<>(args.length);
         for (String arg : args) {
             items.add(RedisMessageHelper.bulkString(arg));
@@ -206,8 +256,36 @@ public class RedisClient {
         return new ArrayRedisMessage(items);
     }
 
+    private void completeNext(RedisMessage message) {
+        PendingRequest pending = pendingRequests.poll();
+        if (pending == null) {
+            logger.warn("Received unsolicited Redis response: {}", message.getClass().getSimpleName());
+            ReferenceCountUtil.release(message);
+            return;
+        }
+        pending.cancelTimeout();
+        outstandingRequests.remove(pending);
+        pending.future.complete(message);
+    }
+
+    private void failPending(Throwable cause) {
+        Throwable failure = cause != null ? cause : new ClosedChannelException();
+        for (PendingRequest pending : outstandingRequests) {
+            pending.cancelTimeout();
+            pending.future.completeExceptionally(failure);
+        }
+        outstandingRequests.clear();
+        pendingRequests.clear();
+    }
+
+    private static String safeMessage(Throwable error) {
+        String message = error.getMessage();
+        return message == null || message.isBlank() ? error.getClass().getSimpleName() : message;
+    }
+
     public boolean isConnected() {
-        return connected && channel != null && channel.isActive();
+        Channel currentChannel = channel;
+        return connected && currentChannel != null && currentChannel.isActive();
     }
 
     public String getHost() {
@@ -216,5 +294,51 @@ public class RedisClient {
 
     public int getPort() {
         return port;
+    }
+
+    private final class ResponseHandler extends SimpleChannelInboundHandler<RedisMessage> {
+        @Override
+        protected void channelRead0(ChannelHandlerContext ctx, RedisMessage msg) {
+            // Keep the existing application heartbeat behavior unchanged.
+            if (msg instanceof SimpleStringRedisMessage simple
+                    && "PING".equalsIgnoreCase(simple.content())) {
+                ctx.writeAndFlush(RedisMessageHelper.simpleString("PONG"));
+                return;
+            }
+            if (channel != ctx.channel()) {
+                return;
+            }
+            completeNext(RedisMessageUtil.deepCopy(msg));
+        }
+
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+            if (channel == ctx.channel()) {
+                connected = false;
+                channel = null;
+                failPending(new ClosedChannelException());
+                logger.info("Disconnected from Redis server");
+            }
+            super.channelInactive(ctx);
+        }
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+            if (channel == ctx.channel()) {
+                failPending(cause);
+            }
+            ctx.close();
+        }
+    }
+
+    private static final class PendingRequest {
+        private final CompletableFuture<RedisMessage> future = new CompletableFuture<>();
+        private ScheduledFuture<?> timeout;
+
+        private void cancelTimeout() {
+            if (timeout != null) {
+                timeout.cancel(false);
+            }
+        }
     }
 }

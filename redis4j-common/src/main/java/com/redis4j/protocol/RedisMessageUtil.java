@@ -29,8 +29,11 @@ public final class RedisMessageUtil {
                 return FullBulkStringRedisMessage.NULL_INSTANCE;
             }
             ByteBuf content = bulk.content();
-            if (content == null || !content.isReadable()) {
+            if (content == null) {
                 return FullBulkStringRedisMessage.NULL_INSTANCE;
+            }
+            if (!content.isReadable()) {
+                return new FullBulkStringRedisMessage(Unpooled.EMPTY_BUFFER);
             }
             byte[] bytes = new byte[content.readableBytes()];
             content.getBytes(content.readerIndex(), bytes);

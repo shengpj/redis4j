@@ -11,6 +11,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -27,6 +29,10 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
 
     private final CommandRegistry commandRegistry;
     private final ThreadPoolExecutor commandExecutor;
+    private final Deque<ParsedCommand> pendingCommands = new ArrayDeque<>();
+    private boolean commandRunning;
+
+    private static final int MAX_PENDING_COMMANDS_PER_CONNECTION = 1024;
 
     public NettyCodecHandler(CommandRegistry commandRegistry, ThreadPoolExecutor commandExecutor) {
         this.commandRegistry = commandRegistry;
@@ -62,20 +68,59 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
         logger.debug("Executing command: {} {}", parsed.name(), List.of(parsed.args()));
 
         // 写回操作切回 EventLoop 线程，避免 Netty 内部跨线程调度
-        var executor = ctx.executor();
+        if (pendingCommands.size() >= MAX_PENDING_COMMANDS_PER_CONNECTION) {
+            logger.warn("Too many pending commands, closing: {}", ctx.channel().remoteAddress());
+            ctx.close();
+            return;
+        }
+        pendingCommands.addLast(parsed);
+        dispatchNext(ctx);
+    }
+
+    private void dispatchNext(ChannelHandlerContext ctx) {
+        if (commandRunning) {
+            return;
+        }
+        ParsedCommand parsed = pendingCommands.pollFirst();
+        if (parsed == null) {
+            return;
+        }
+        commandRunning = true;
         try {
             commandExecutor.submit(() -> {
+                RedisMessage response;
                 try {
-                    RedisMessage response = commandRegistry.execute(parsed.name(), parsed.args());
-                    executor.execute(() -> ctx.writeAndFlush(response));
+                    response = commandRegistry.execute(parsed.name(), parsed.args());
                 } catch (Exception e) {
                     logger.error("Error processing command", e);
-                    executor.execute(() -> ctx.writeAndFlush(RedisMessageHelper.error("ERR " + e.getMessage())));
+                    response = RedisMessageHelper.error("ERR " + e.getMessage());
+                }
+                RedisMessage completedResponse = response;
+                try {
+                    ctx.executor().execute(() -> completeCommand(ctx, completedResponse));
+                } catch (RejectedExecutionException e) {
+                    io.netty.util.ReferenceCountUtil.release(completedResponse);
                 }
             });
         } catch (RejectedExecutionException e) {
-            ctx.writeAndFlush(RedisMessageHelper.error("ERR server is busy, try again later"));
+            completeCommand(ctx, RedisMessageHelper.error("ERR server is busy, try again later"));
         }
+    }
+
+    private void completeCommand(ChannelHandlerContext ctx, RedisMessage response) {
+        if (ctx.channel().isActive()) {
+            ctx.writeAndFlush(response);
+        } else {
+            io.netty.util.ReferenceCountUtil.release(response);
+        }
+        commandRunning = false;
+        dispatchNext(ctx);
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        pendingCommands.clear();
+        super.channelInactive(ctx);
     }
 
     /**

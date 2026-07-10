@@ -13,6 +13,7 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.redis.*;
+import io.netty.handler.flush.FlushConsolidationHandler;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 import io.netty.handler.timeout.IdleStateHandler;
@@ -22,6 +23,7 @@ import org.slf4j.LoggerFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Redis 服务端主类
@@ -40,6 +42,7 @@ public class RedisServer {
     private EventLoopGroup workerGroup;
     private ThreadPoolExecutor commandExecutor;
     private Channel serverChannel;
+    private final AtomicBoolean shuttingDown = new AtomicBoolean();
 
     public RedisServer() {
         this(ServerConfig.defaultConfig());
@@ -112,8 +115,10 @@ public class RedisServer {
 
                         // 使用 Netty codec-redis
                         pipeline.addLast(new RedisDecoder());
+                        pipeline.addLast(new RedisBulkStringAggregator());
                         pipeline.addLast(new RedisMessageAggregator());
                         pipeline.addLast(new RedisEncoder());
+                        pipeline.addLast(new FlushConsolidationHandler(256, true));
                         pipeline.addLast(new NettyCodecHandler(commandRegistry, commandExecutor));
                     }
                 });
@@ -136,6 +141,9 @@ public class RedisServer {
      * 关闭服务器
      */
     public void shutdown() {
+        if (!shuttingDown.compareAndSet(false, true)) {
+            return;
+        }
         logger.info("Shutting down Redis4J server...");
 
         // 停止定时任务
@@ -147,15 +155,7 @@ public class RedisServer {
         logger.info("RDB save completed");
 
         if (serverChannel != null) {
-            serverChannel.close();
-        }
-
-        if (workerGroup != null) {
-            workerGroup.shutdownGracefully();
-        }
-
-        if (bossGroup != null) {
-            bossGroup.shutdownGracefully();
+            serverChannel.close().syncUninterruptibly();
         }
 
         if (commandExecutor != null) {
@@ -168,6 +168,14 @@ public class RedisServer {
                 commandExecutor.shutdownNow();
                 Thread.currentThread().interrupt();
             }
+        }
+
+        if (workerGroup != null) {
+            workerGroup.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly();
+        }
+
+        if (bossGroup != null) {
+            bossGroup.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly();
         }
 
         if (dataStore != null) {
