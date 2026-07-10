@@ -2,25 +2,25 @@ package com.redis4j.command.impl;
 
 import com.redis4j.command.AbstractCommand;
 import com.redis4j.command.annotation.RedisCommand;
-import com.redis4j.protocol.RedisMessageHelper;
-import com.redis4j.storage.DataStore;
-import io.netty.handler.codec.redis.RedisMessage;
+import com.redis4j.protocol.response.CommandResponses;
+import com.redis4j.storage.StringStore;
+import com.redis4j.protocol.response.CommandResponse;
 
 import java.util.Arrays;
 import java.util.List;
 
 /**
- * String 命令实现
+ * String 鍛戒护瀹炵幇
  */
 public class StringCommands {
 
     // ==================== GET ====================
 
-    @RedisCommand(name = "GET", arity = 2)
+    @RedisCommand
     public static class StringGetCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final StringStore dataStore;
 
-        public StringGetCommand(DataStore dataStore) {
+        public StringGetCommand(StringStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -35,19 +35,19 @@ public class StringCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String value = dataStore.get(args[0]);
-            return RedisMessageHelper.bulkString(value);
+            return CommandResponses.bulkString(value);
         }
     }
 
     // ==================== SET ====================
 
-    @RedisCommand(name = "SET", arity = -2)
+    @RedisCommand
     public static class StringSetCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final StringStore dataStore;
 
-        public StringSetCommand(DataStore dataStore) {
+        public StringSetCommand(StringStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -58,7 +58,7 @@ public class StringCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 2 个参数
+            return -2; // 鑷冲皯 2 涓弬鏁?
         }
 
         @Override
@@ -72,21 +72,21 @@ public class StringCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String key = args[0];
             String value = args[1];
             dataStore.set(key, value);
-            return RedisMessageHelper.ok();
+            return CommandResponses.ok();
         }
     }
 
     // ==================== SETNX ====================
 
-    @RedisCommand(name = "SETNX", arity = 3)
+    @RedisCommand
     public static class StringSetNxCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final StringStore dataStore;
 
-        public StringSetNxCommand(DataStore dataStore) {
+        public StringSetNxCommand(StringStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -101,19 +101,19 @@ public class StringCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             boolean result = dataStore.setNx(args[0], args[1]);
-            return RedisMessageHelper.integer(result ? 1 : 0);
+            return CommandResponses.integer(result ? 1 : 0);
         }
     }
 
     // ==================== SETEX ====================
 
-    @RedisCommand(name = "SETEX", arity = 4)
+    @RedisCommand
     public static class StringSetExCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final StringStore dataStore;
 
-        public StringSetExCommand(DataStore dataStore) {
+        public StringSetExCommand(StringStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -128,27 +128,27 @@ public class StringCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String key = args[0];
             long seconds = parseLong(args[1]);
             String value = args[2];
             dataStore.setEx(key, value, seconds);
-            return RedisMessageHelper.ok();
+            return CommandResponses.ok();
         }
 
         @Override
-        protected void logExecution(String[] args, RedisMessage result) {
-            // SETEX 不需要详细日志
+        protected void logExecution(String[] args, CommandResponse result) {
+            // SETEX 涓嶉渶瑕佽缁嗘棩蹇?
         }
     }
 
     // ==================== MGET ====================
 
-    @RedisCommand(name = "MGET", arity = -2)
+    @RedisCommand
     public static class StringMGetCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final StringStore dataStore;
 
-        public StringMGetCommand(DataStore dataStore) {
+        public StringMGetCommand(StringStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -173,21 +173,21 @@ public class StringCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String[] values = dataStore.mGet(args);
-            return RedisMessageHelper.array(Arrays.stream(values)
-                    .map(RedisMessageHelper::bulkString)
+            return CommandResponses.array(Arrays.stream(values)
+                    .map(CommandResponses::bulkString)
                     .toList());
         }
     }
 
     // ==================== MSET ====================
 
-    @RedisCommand(name = "MSET", arity = -2)
+    @RedisCommand
     public static class StringMSetCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final StringStore dataStore;
 
-        public StringMSetCommand(DataStore dataStore) {
+        public StringMSetCommand(StringStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -212,23 +212,23 @@ public class StringCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             java.util.Map<String, String> map = new java.util.HashMap<>();
             for (int i = 0; i < args.length; i += 2) {
                 map.put(args[i], args[i + 1]);
             }
             dataStore.mSet(map);
-            return RedisMessageHelper.ok();
+            return CommandResponses.ok();
         }
     }
 
     // ==================== INCR ====================
 
-    @RedisCommand(name = "INCR", arity = 2)
+    @RedisCommand
     public static class StringIncrCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final StringStore dataStore;
 
-        public StringIncrCommand(DataStore dataStore) {
+        public StringIncrCommand(StringStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -243,19 +243,19 @@ public class StringCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long result = dataStore.incr(args[0]);
-            return RedisMessageHelper.integer(result);
+            return CommandResponses.integer(result);
         }
     }
 
     // ==================== INCRBY ====================
 
-    @RedisCommand(name = "INCRBY", arity = 3)
+    @RedisCommand
     public static class StringIncrByCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final StringStore dataStore;
 
-        public StringIncrByCommand(DataStore dataStore) {
+        public StringIncrByCommand(StringStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -270,20 +270,20 @@ public class StringCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long delta = parseLong(args[1]);
             long result = dataStore.incrBy(args[0], delta);
-            return RedisMessageHelper.integer(result);
+            return CommandResponses.integer(result);
         }
     }
 
     // ==================== DECR ====================
 
-    @RedisCommand(name = "DECR", arity = 2)
+    @RedisCommand
     public static class StringDecrCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final StringStore dataStore;
 
-        public StringDecrCommand(DataStore dataStore) {
+        public StringDecrCommand(StringStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -298,19 +298,19 @@ public class StringCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long result = dataStore.decr(args[0]);
-            return RedisMessageHelper.integer(result);
+            return CommandResponses.integer(result);
         }
     }
 
     // ==================== DECRBY ====================
 
-    @RedisCommand(name = "DECRBY", arity = 3)
+    @RedisCommand
     public static class StringDecrByCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final StringStore dataStore;
 
-        public StringDecrByCommand(DataStore dataStore) {
+        public StringDecrByCommand(StringStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -325,20 +325,20 @@ public class StringCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long delta = parseLong(args[1]);
             long result = dataStore.decrBy(args[0], delta);
-            return RedisMessageHelper.integer(result);
+            return CommandResponses.integer(result);
         }
     }
 
     // ==================== STRLEN ====================
 
-    @RedisCommand(name = "STRLEN", arity = 2)
+    @RedisCommand
     public static class StringStrlenCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final StringStore dataStore;
 
-        public StringStrlenCommand(DataStore dataStore) {
+        public StringStrlenCommand(StringStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -353,19 +353,19 @@ public class StringCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long length = dataStore.strlen(args[0]);
-            return RedisMessageHelper.integer(length);
+            return CommandResponses.integer(length);
         }
     }
 
     // ==================== APPEND ====================
 
-    @RedisCommand(name = "APPEND", arity = 3)
+    @RedisCommand
     public static class StringAppendCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final StringStore dataStore;
 
-        public StringAppendCommand(DataStore dataStore) {
+        public StringAppendCommand(StringStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -380,9 +380,9 @@ public class StringCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long length = dataStore.append(args[0], args[1]);
-            return RedisMessageHelper.integer(length);
+            return CommandResponses.integer(length);
         }
     }
 }

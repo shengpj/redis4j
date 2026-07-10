@@ -1,115 +1,66 @@
 package com.redis4j.command;
 
-import com.redis4j.protocol.RedisMessageHelper;
-import io.netty.handler.codec.redis.RedisMessage;
+import com.redis4j.protocol.response.CommandResponse;
+import com.redis4j.protocol.response.CommandResponses;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * 命令抽象基类
- * 提供统一的参数校验、错误处理和日志
- */
+/** Template method for command validation, execution and error handling. */
 public abstract class AbstractCommand implements Command {
-
     protected final Logger logger = LoggerFactory.getLogger(getClass());
 
     @Override
-    public final RedisMessage execute(String[] args) {
-        // 1. 参数校验
+    public final CommandResponse execute(String[] args) {
         if (!validate(args)) {
-            return RedisMessageHelper.error("ERR " + getValidationErrorMessage());
+            return CommandResponses.error("ERR " + getValidationErrorMessage());
         }
-
-        // 2. 执行命令
         try {
-            RedisMessage result = doExecute(args);
-            // 3. 日志记录
+            CommandResponse result = doExecute(args);
             logExecution(args, result);
             return result;
         } catch (IllegalArgumentException e) {
-            return RedisMessageHelper.error("ERR " + e.getMessage());
+            return CommandResponses.error("ERR " + e.getMessage());
         } catch (Exception e) {
             logger.error("Error executing command: {}", getName(), e);
-            return RedisMessageHelper.error("ERR " + e.getMessage());
+            return CommandResponses.error("ERR " + e.getMessage());
         }
     }
 
-    /**
-     * 参数校验
-     * @return true 表示参数合法
-     */
     protected boolean validate(String[] args) {
-        int arity = getArity();
-        if (arity > 0) {
-            // 固定参数数量
-            return args != null && args.length == arity - 1;
-        } else if (arity == -1) {
-            // 可变参数，至少 1 个
-            return args != null && args.length >= 1;
-        } else if (arity == -2) {
-            // 可变参数，至少 2 个
-            return args != null && args.length >= 2;
-        }
-        return args != null;
+        return args != null && metadata().arity().accepts(args.length);
     }
 
-    /**
-     * 获取参数校验失败的错误消息
-     */
     protected String getValidationErrorMessage() {
         int arity = getArity();
-        String cmd = getName().toLowerCase();
-        if (arity > 0) {
-            return "wrong number of arguments for '" + cmd + "' command";
-        } else if (arity == -1) {
-            return "wrong number of arguments for '" + cmd + "' command (at least 1 required)";
-        } else if (arity == -2) {
-            return "wrong number of arguments for '" + cmd + "' command (at least 2 required)";
-        }
-        return "invalid arguments for '" + cmd + "' command";
+        String command = getName().toLowerCase();
+        if (arity > 0) return "wrong number of arguments for '" + command + "' command";
+        return "wrong number of arguments for '" + command + "' command (at least "
+                + Math.abs(arity) + " required)";
     }
 
-    /**
-     * 具体命令执行逻辑
-     */
-    protected abstract RedisMessage doExecute(String[] args);
+    protected abstract CommandResponse doExecute(String[] args);
 
-    /**
-     * 安全地解析长整数，提供 Redis 兼容的错误消息
-     */
-    protected long parseLong(String s) {
+    protected long parseLong(String value) {
         try {
-            return Long.parseLong(s);
+            return Long.parseLong(value);
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException("value is not an integer or out of range");
         }
     }
 
-    /**
-     * 将 RedisMessage 转为可读的日志文本
-     */
-    private String formatResult(RedisMessage msg) {
-        if (msg == null) return "null";
-        if (msg instanceof io.netty.handler.codec.redis.SimpleStringRedisMessage s) return s.content();
-        if (msg instanceof io.netty.handler.codec.redis.ErrorRedisMessage e) return e.content();
-        if (msg instanceof io.netty.handler.codec.redis.IntegerRedisMessage i) return String.valueOf(i.value());
-        if (msg instanceof io.netty.handler.codec.redis.FullBulkStringRedisMessage b) {
-            if (b.isNull()) return "(nil)";
-            return b.content().toString(java.nio.charset.StandardCharsets.UTF_8);
+    protected void logExecution(String[] args, CommandResponse result) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Executed {} with args={}, result={}", getName(),
+                    java.util.Arrays.toString(args), formatResult(result));
         }
-        if (msg instanceof io.netty.handler.codec.redis.ArrayRedisMessage a) {
-            if (a.isNull()) return "(nil)";
-            return a.children().size() + " elements";
-        }
-        return msg.getClass().getSimpleName();
     }
 
-    /**
-     * 记录命令执行日志（可选重写）
-     */
-    protected void logExecution(String[] args, RedisMessage result) {
-        if (logger.isDebugEnabled()) {
-            logger.debug("Executed {} with args={}, result={}", getName(), java.util.Arrays.toString(args), formatResult(result));
-        }
+    private String formatResult(CommandResponse response) {
+        if (response instanceof CommandResponse.SimpleString value) return value.value();
+        if (response instanceof CommandResponse.Error value) return value.value();
+        if (response instanceof CommandResponse.IntegerValue value) return String.valueOf(value.value());
+        if (response instanceof CommandResponse.BulkString value) return value.value() == null ? "(nil)" : value.value();
+        if (response instanceof CommandResponse.ArrayValue value) return value.values() == null ? "(nil)" : value.values().size() + " elements";
+        return response.getClass().getSimpleName();
     }
 }

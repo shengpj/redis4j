@@ -2,6 +2,7 @@ package com.redis4j.server;
 
 import com.redis4j.command.CommandRegistry;
 import com.redis4j.protocol.RedisMessageHelper;
+import com.redis4j.protocol.response.CommandResponse;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -88,14 +89,14 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
         commandRunning = true;
         try {
             commandExecutor.submit(() -> {
-                RedisMessage response;
+                CommandResponse response;
                 try {
                     response = commandRegistry.execute(parsed.name(), parsed.args());
                 } catch (Exception e) {
                     logger.error("Error processing command", e);
-                    response = RedisMessageHelper.error("ERR " + e.getMessage());
+                    response = new com.redis4j.protocol.response.CommandResponse.Error("ERR " + e.getMessage());
                 }
-                RedisMessage completedResponse = response;
+                RedisMessage completedResponse = NettyResponseAdapter.adapt(response);
                 try {
                     ctx.executor().execute(() -> completeCommand(ctx, completedResponse));
                 } catch (RejectedExecutionException e) {

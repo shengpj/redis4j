@@ -2,25 +2,25 @@ package com.redis4j.command.impl;
 
 import com.redis4j.command.AbstractCommand;
 import com.redis4j.command.annotation.RedisCommand;
-import com.redis4j.protocol.RedisMessageHelper;
-import com.redis4j.storage.DataStore;
-import io.netty.handler.codec.redis.RedisMessage;
+import com.redis4j.protocol.response.CommandResponses;
+import com.redis4j.storage.SetStore;
+import com.redis4j.protocol.response.CommandResponse;
 
 import java.util.Arrays;
 import java.util.Set;
 
 /**
- * Set 命令实现
+ * Set 鍛戒护瀹炵幇
  */
 public class SetCommands {
 
     // ==================== SADD ====================
 
-    @RedisCommand(name = "SADD", arity = -2)
+    @RedisCommand
     public static class SetSAddCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final SetStore dataStore;
 
-        public SetSAddCommand(DataStore dataStore) {
+        public SetSAddCommand(SetStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -31,7 +31,7 @@ public class SetCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 2 个参数
+            return -2; // 鑷冲皯 2 涓弬鏁?
         }
 
         @Override
@@ -40,21 +40,21 @@ public class SetCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String key = args[0];
             String[] members = Arrays.copyOfRange(args, 1, args.length);
             long count = dataStore.sAdd(key, members);
-            return RedisMessageHelper.integer(count);
+            return CommandResponses.integer(count);
         }
     }
 
     // ==================== SREM ====================
 
-    @RedisCommand(name = "SREM", arity = -2)
+    @RedisCommand
     public static class SetSRemCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final SetStore dataStore;
 
-        public SetSRemCommand(DataStore dataStore) {
+        public SetSRemCommand(SetStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -65,7 +65,7 @@ public class SetCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 2 个参数
+            return -2; // 鑷冲皯 2 涓弬鏁?
         }
 
         @Override
@@ -74,21 +74,21 @@ public class SetCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String key = args[0];
             String[] members = Arrays.copyOfRange(args, 1, args.length);
             long count = dataStore.sRem(key, members);
-            return RedisMessageHelper.integer(count);
+            return CommandResponses.integer(count);
         }
     }
 
     // ==================== SMEMBERS ====================
 
-    @RedisCommand(name = "SMEMBERS", arity = 2)
+    @RedisCommand
     public static class SetSMembersCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final SetStore dataStore;
 
-        public SetSMembersCommand(DataStore dataStore) {
+        public SetSMembersCommand(SetStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -103,21 +103,21 @@ public class SetCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             Set<String> members = dataStore.sMembers(args[0]);
-            return RedisMessageHelper.array(members.stream()
-                    .map(RedisMessageHelper::bulkString)
+            return CommandResponses.array(members.stream()
+                    .map(CommandResponses::bulkString)
                     .toList());
         }
     }
 
     // ==================== SISMEMBER ====================
 
-    @RedisCommand(name = "SISMEMBER", arity = 3)
+    @RedisCommand
     public static class SetSIsMemberCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final SetStore dataStore;
 
-        public SetSIsMemberCommand(DataStore dataStore) {
+        public SetSIsMemberCommand(SetStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -132,19 +132,19 @@ public class SetCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             boolean isMember = dataStore.sIsMember(args[0], args[1]);
-            return RedisMessageHelper.integer(isMember ? 1 : 0);
+            return CommandResponses.integer(isMember ? 1 : 0);
         }
     }
 
     // ==================== SCARD ====================
 
-    @RedisCommand(name = "SCARD", arity = 2)
+    @RedisCommand
     public static class SetSCardCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final SetStore dataStore;
 
-        public SetSCardCommand(DataStore dataStore) {
+        public SetSCardCommand(SetStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -159,19 +159,19 @@ public class SetCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long count = dataStore.sCard(args[0]);
-            return RedisMessageHelper.integer(count);
+            return CommandResponses.integer(count);
         }
     }
 
     // ==================== SINTER ====================
 
-    @RedisCommand(name = "SINTER", arity = -2)
+    @RedisCommand
     public static class SetSInterCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final SetStore dataStore;
 
-        public SetSInterCommand(DataStore dataStore) {
+        public SetSInterCommand(SetStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -182,7 +182,7 @@ public class SetCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 1 个参数
+            return -2; // 鑷冲皯 1 涓弬鏁?
         }
 
         @Override
@@ -191,21 +191,21 @@ public class SetCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             Set<String> result = dataStore.sInter(args);
-            return RedisMessageHelper.array(result.stream()
-                    .map(RedisMessageHelper::bulkString)
+            return CommandResponses.array(result.stream()
+                    .map(CommandResponses::bulkString)
                     .toList());
         }
     }
 
     // ==================== SUNION ====================
 
-    @RedisCommand(name = "SUNION", arity = -2)
+    @RedisCommand
     public static class SetSUnionCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final SetStore dataStore;
 
-        public SetSUnionCommand(DataStore dataStore) {
+        public SetSUnionCommand(SetStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -216,7 +216,7 @@ public class SetCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 1 个参数
+            return -2; // 鑷冲皯 1 涓弬鏁?
         }
 
         @Override
@@ -225,21 +225,21 @@ public class SetCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             Set<String> result = dataStore.sUnion(args);
-            return RedisMessageHelper.array(result.stream()
-                    .map(RedisMessageHelper::bulkString)
+            return CommandResponses.array(result.stream()
+                    .map(CommandResponses::bulkString)
                     .toList());
         }
     }
 
     // ==================== SDIFF ====================
 
-    @RedisCommand(name = "SDIFF", arity = -2)
+    @RedisCommand
     public static class SetSDiffCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final SetStore dataStore;
 
-        public SetSDiffCommand(DataStore dataStore) {
+        public SetSDiffCommand(SetStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -250,7 +250,7 @@ public class SetCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 1 个参数
+            return -2; // 鑷冲皯 1 涓弬鏁?
         }
 
         @Override
@@ -259,21 +259,21 @@ public class SetCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             Set<String> result = dataStore.sDiff(args);
-            return RedisMessageHelper.array(result.stream()
-                    .map(RedisMessageHelper::bulkString)
+            return CommandResponses.array(result.stream()
+                    .map(CommandResponses::bulkString)
                     .toList());
         }
     }
 
     // ==================== SMOVE ====================
 
-    @RedisCommand(name = "SMOVE", arity = 4)
+    @RedisCommand
     public static class SetSMoveCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final SetStore dataStore;
 
-        public SetSMoveCommand(DataStore dataStore) {
+        public SetSMoveCommand(SetStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -288,19 +288,19 @@ public class SetCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             boolean result = dataStore.sMove(args[0], args[1], args[2]);
-            return RedisMessageHelper.integer(result ? 1 : 0);
+            return CommandResponses.integer(result ? 1 : 0);
         }
     }
 
     // ==================== SPOP ====================
 
-    @RedisCommand(name = "SPOP", arity = 2)
+    @RedisCommand
     public static class SetSPopCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final SetStore dataStore;
 
-        public SetSPopCommand(DataStore dataStore) {
+        public SetSPopCommand(SetStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -315,19 +315,19 @@ public class SetCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String member = dataStore.sPop(args[0]);
-            return RedisMessageHelper.bulkString(member);
+            return CommandResponses.bulkString(member);
         }
     }
 
     // ==================== SRANDMEMBER ====================
 
-    @RedisCommand(name = "SRANDMEMBER", arity = -2)
+    @RedisCommand
     public static class SetSRandMemberCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final SetStore dataStore;
 
-        public SetSRandMemberCommand(DataStore dataStore) {
+        public SetSRandMemberCommand(SetStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -338,7 +338,7 @@ public class SetCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 1 个参数
+            return -2; // 鑷冲皯 1 涓弬鏁?
         }
 
         @Override
@@ -347,17 +347,17 @@ public class SetCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String key = args[0];
             if (args.length >= 2) {
                 long count = parseLong(args[1]);
                 String[] members = dataStore.sRandMember(key, count);
-                return RedisMessageHelper.array(Arrays.stream(members)
-                        .map(RedisMessageHelper::bulkString)
+                return CommandResponses.array(Arrays.stream(members)
+                        .map(CommandResponses::bulkString)
                         .toList());
             } else {
                 String member = dataStore.sRandMember(key);
-                return RedisMessageHelper.bulkString(member);
+                return CommandResponses.bulkString(member);
             }
         }
     }

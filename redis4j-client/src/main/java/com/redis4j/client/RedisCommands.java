@@ -159,9 +159,10 @@ public class RedisCommands {
     }
 
     public String time() throws InterruptedException {
-        List<RedisMessage> array = RedisMessageHelper.extractArray(client.sendCommand("TIME"));
+        RedisMessage response = client.sendCommand("TIME");
+        List<RedisMessage> array = RedisMessageHelper.extractArray(response);
         if (array == null || array.isEmpty()) return "(nil)";
-        return String.join(" ", getStringArray(client.sendCommand("TIME")));
+        return String.join(" ", getStringArray(response));
     }
 
     public String ping() throws InterruptedException {

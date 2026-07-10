@@ -3,15 +3,18 @@ package com.redis4j.server;
 import com.redis4j.command.Command;
 import com.redis4j.command.CommandRegistry;
 import com.redis4j.protocol.RedisMessageHelper;
+import com.redis4j.protocol.response.CommandResponse;
+import com.redis4j.protocol.response.CommandResponses;
 import com.redis4j.storage.MemoryStore;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.redis.ArrayRedisMessage;
 import io.netty.handler.codec.redis.RedisMessage;
 import io.netty.handler.codec.redis.SimpleStringRedisMessage;
+import io.netty.handler.codec.redis.FullBulkStringRedisMessage;
 import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
+import java.util.Arrays;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -20,6 +23,30 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class NettyCodecHandlerTest {
+
+    @Test
+    void adaptsRealCommandResponsesToNettyMessages() throws Exception {
+        MemoryStore store = new MemoryStore();
+        CommandRegistry registry = new CommandRegistry(store);
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                2, 2, 0, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(16));
+        EmbeddedChannel channel = new EmbeddedChannel(new NettyCodecHandler(registry, executor));
+        try {
+            channel.writeInbound(request("SET", "key", "value"));
+            channel.writeInbound(request("GET", "key"));
+            RedisMessage setResponse = awaitOutbound(channel);
+            RedisMessage getResponse = awaitOutbound(channel);
+            assertEquals("OK", ((SimpleStringRedisMessage) setResponse).content());
+            assertEquals("value", ((FullBulkStringRedisMessage) getResponse).content()
+                    .toString(java.nio.charset.StandardCharsets.UTF_8));
+            ReferenceCountUtil.release(setResponse);
+            ReferenceCountUtil.release(getResponse);
+        } finally {
+            channel.finishAndReleaseAll();
+            executor.shutdownNow();
+            store.close();
+        }
+    }
 
     @Test
     void preservesCommandCompletionOrderForOneConnection() throws Exception {
@@ -61,7 +88,7 @@ class NettyCodecHandlerTest {
             }
 
             @Override
-            public RedisMessage execute(String[] args) {
+            public CommandResponse execute(String[] args) {
                 if (delayMillis > 0) {
                     try {
                         Thread.sleep(delayMillis);
@@ -69,13 +96,15 @@ class NettyCodecHandlerTest {
                         Thread.currentThread().interrupt();
                     }
                 }
-                return RedisMessageHelper.simpleString(name);
+                return CommandResponses.simpleString(name);
             }
         };
     }
 
-    private static ArrayRedisMessage request(String command) {
-        return new ArrayRedisMessage(List.of(RedisMessageHelper.bulkString(command)));
+    private static ArrayRedisMessage request(String... arguments) {
+        return new ArrayRedisMessage(Arrays.stream(arguments)
+                .map(RedisMessageHelper::bulkString)
+                .toList());
     }
 
     private static RedisMessage awaitOutbound(EmbeddedChannel channel) throws InterruptedException {

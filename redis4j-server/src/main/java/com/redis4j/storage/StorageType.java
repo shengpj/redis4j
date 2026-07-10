@@ -12,15 +12,5 @@ public enum StorageType {
     /**
      * 分区内存存储（多线程优化）
      */
-    PARTITIONED,
-
-    /**
-     * Eclipse Collections 存储
-     */
-    ECLIPSE_COLLECTIONS,
-
-    /**
-     * Caffeine 缓存存储
-     */
-    CAFFEINE
+    PARTITIONED
 }

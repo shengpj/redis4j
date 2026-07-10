@@ -21,8 +21,7 @@ public class PersistenceManager {
 
     private final DataStore dataStore;
     private final String dataDir;
-    private final RDBWriter rdbWriter;
-    private final RDBReader rdbReader;
+    private final PersistenceEngine persistenceEngine;
 
     private ScheduledExecutorService scheduler;
     private volatile long saveIntervalSeconds = 900;
@@ -32,10 +31,13 @@ public class PersistenceManager {
     private volatile long lastBgSaveStart = 0;
 
     public PersistenceManager(DataStore dataStore, String dataDir) {
+        this(dataStore, dataDir, new RdbPersistenceEngine());
+    }
+
+    public PersistenceManager(DataStore dataStore, String dataDir, PersistenceEngine persistenceEngine) {
         this.dataStore = dataStore;
         this.dataDir = dataDir;
-        this.rdbWriter = new RDBWriter();
-        this.rdbReader = new RDBReader();
+        this.persistenceEngine = persistenceEngine;
     }
 
     public void start() {
@@ -90,7 +92,7 @@ public class PersistenceManager {
             return;
         }
         try {
-            rdbWriter.save(dataStore, filePath);
+            persistenceEngine.save(dataStore, filePath);
             lastSaveTimestamp.set(System.currentTimeMillis() / 1000);
         } catch (IOException e) {
             logger.error("Failed to save RDB file", e);
@@ -110,7 +112,7 @@ public class PersistenceManager {
         long start = System.currentTimeMillis();
         try {
             String filePath = dataDir + "/dump.rdb";
-            rdbWriter.save(dataStore, filePath);
+            persistenceEngine.save(dataStore, filePath);
             lastSaveTimestamp.set(System.currentTimeMillis() / 1000);
             long elapsed = System.currentTimeMillis() - start;
             logger.info("Background RDB save completed in {} ms", elapsed);
@@ -133,7 +135,7 @@ public class PersistenceManager {
             }
             try {
                 String filePath = dataDir + "/dump.rdb";
-                rdbWriter.save(dataStore, filePath);
+                persistenceEngine.save(dataStore, filePath);
                 lastSaveTimestamp.set(System.currentTimeMillis() / 1000);
                 logger.info("BGSAVE completed");
             } catch (IOException e) {
@@ -149,8 +151,8 @@ public class PersistenceManager {
     public void load() {
         String filePath = dataDir + "/dump.rdb";
         try {
-            rdbReader.load(dataStore, filePath);
-            lastSaveTimestamp.set(rdbReader.getLastSaveTimestamp());
+            persistenceEngine.load(dataStore, filePath);
+            lastSaveTimestamp.set(persistenceEngine.getLastSaveTimestamp());
         } catch (IOException e) {
             logger.error("Failed to load RDB file", e);
         }

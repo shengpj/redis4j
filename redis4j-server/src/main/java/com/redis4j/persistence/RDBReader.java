@@ -11,6 +11,7 @@ import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.StandardOpenOption;
+import java.util.Map;
 
 /**
  * RDB 文件读取器 — NIO 版本
@@ -25,6 +26,11 @@ public class RDBReader {
     private static final int MAX_KEY_LENGTH = 10_000_000;
 
     private long lastSaveTimestamp = 0;
+    private final Map<Integer, ValueReader> codecs = Map.of(
+            0x00, this::restoreString,
+            0x01, this::restoreList,
+            0x02, this::restoreSet,
+            0x04, this::restoreHash);
 
     public void load(DataStore dataStore, String filePath) throws IOException {
         File file = new File(filePath);
@@ -99,13 +105,11 @@ public class RDBReader {
             // Read type AFTER optional expireAt (8 bytes consumed above)
             int type = buffer.get() & 0xFF;
 
-            // Restore value based on type
-            switch (type) {
-                case 0x00 -> count += restoreString(buffer, dataStore, key, expireAt);
-                case 0x01 -> count += restoreList(buffer, dataStore, key, expireAt);
-                case 0x02 -> count += restoreSet(buffer, dataStore, key, expireAt);
-                case 0x04 -> count += restoreHash(buffer, dataStore, key, expireAt);
-                default -> logger.warn("Unknown type 0x{} for key '{}'", Integer.toHexString(type), key);
+            ValueReader codec = codecs.get(type);
+            if (codec == null) {
+                logger.warn("Unknown type 0x{} for key '{}'", Integer.toHexString(type), key);
+            } else {
+                count += codec.read(buffer, dataStore, key, expireAt);
             }
         }
 
@@ -189,5 +193,10 @@ public class RDBReader {
 
     public long getLastSaveTimestamp() {
         return lastSaveTimestamp;
+    }
+
+    @FunctionalInterface
+    private interface ValueReader {
+        int read(MappedByteBuffer buffer, DataStore dataStore, String key, long expireAt);
     }
 }

@@ -2,25 +2,25 @@ package com.redis4j.command.impl;
 
 import com.redis4j.command.AbstractCommand;
 import com.redis4j.command.annotation.RedisCommand;
-import com.redis4j.protocol.RedisMessageHelper;
-import com.redis4j.storage.DataStore;
-import io.netty.handler.codec.redis.RedisMessage;
+import com.redis4j.protocol.response.CommandResponses;
+import com.redis4j.storage.KeyStore;
+import com.redis4j.protocol.response.CommandResponse;
 
 import java.util.Arrays;
 import java.util.Set;
 
 /**
- * Key 命令实现
+ * Key 鍛戒护瀹炵幇
  */
 public class KeyCommands {
 
     // ==================== DEL ====================
 
-    @RedisCommand(name = "DEL", arity = -2)
+    @RedisCommand
     public static class KeyDelCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final KeyStore dataStore;
 
-        public KeyDelCommand(DataStore dataStore) {
+        public KeyDelCommand(KeyStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -31,7 +31,7 @@ public class KeyCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 1 个参数
+            return -2; // 鑷冲皯 1 涓弬鏁?
         }
 
         @Override
@@ -40,19 +40,19 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long count = dataStore.del(args);
-            return RedisMessageHelper.integer(count);
+            return CommandResponses.integer(count);
         }
     }
 
     // ==================== EXISTS ====================
 
-    @RedisCommand(name = "EXISTS", arity = -2)
+    @RedisCommand
     public static class KeyExistsCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final KeyStore dataStore;
 
-        public KeyExistsCommand(DataStore dataStore) {
+        public KeyExistsCommand(KeyStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -63,7 +63,7 @@ public class KeyCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 1 个参数
+            return -2; // 鑷冲皯 1 涓弬鏁?
         }
 
         @Override
@@ -72,19 +72,19 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long count = dataStore.exists(args);
-            return RedisMessageHelper.integer(count);
+            return CommandResponses.integer(count);
         }
     }
 
     // ==================== EXPIRE ====================
 
-    @RedisCommand(name = "EXPIRE", arity = 3)
+    @RedisCommand
     public static class KeyExpireCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final KeyStore dataStore;
 
-        public KeyExpireCommand(DataStore dataStore) {
+        public KeyExpireCommand(KeyStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -99,20 +99,20 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long seconds = parseLong(args[1]);
             boolean result = dataStore.expire(args[0], seconds);
-            return RedisMessageHelper.integer(result ? 1 : 0);
+            return CommandResponses.integer(result ? 1 : 0);
         }
     }
 
     // ==================== EXPIREAT ====================
 
-    @RedisCommand(name = "EXPIREAT", arity = 3)
+    @RedisCommand
     public static class KeyExpireAtCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final KeyStore dataStore;
 
-        public KeyExpireAtCommand(DataStore dataStore) {
+        public KeyExpireAtCommand(KeyStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -127,26 +127,26 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long timestamp = parseLong(args[1]);
             long now = System.currentTimeMillis() / 1000;
             long seconds = timestamp - now;
             if (seconds <= 0) {
                 dataStore.del(args[0]);
-                return RedisMessageHelper.integer(1);
+                return CommandResponses.integer(1);
             }
             boolean result = dataStore.expire(args[0], seconds);
-            return RedisMessageHelper.integer(result ? 1 : 0);
+            return CommandResponses.integer(result ? 1 : 0);
         }
     }
 
     // ==================== TTL ====================
 
-    @RedisCommand(name = "TTL", arity = 2)
+    @RedisCommand
     public static class KeyTtlCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final KeyStore dataStore;
 
-        public KeyTtlCommand(DataStore dataStore) {
+        public KeyTtlCommand(KeyStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -161,19 +161,19 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long ttl = dataStore.ttl(args[0]);
-            return RedisMessageHelper.integer(ttl);
+            return CommandResponses.integer(ttl);
         }
     }
 
     // ==================== PTTL ====================
 
-    @RedisCommand(name = "PTTL", arity = 2)
+    @RedisCommand
     public static class KeyPttlCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final KeyStore dataStore;
 
-        public KeyPttlCommand(DataStore dataStore) {
+        public KeyPttlCommand(KeyStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -188,19 +188,19 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long ttl = dataStore.pttl(args[0]);
-            return RedisMessageHelper.integer(ttl);
+            return CommandResponses.integer(ttl);
         }
     }
 
     // ==================== PERSIST ====================
 
-    @RedisCommand(name = "PERSIST", arity = 2)
+    @RedisCommand
     public static class KeyPersistCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final KeyStore dataStore;
 
-        public KeyPersistCommand(DataStore dataStore) {
+        public KeyPersistCommand(KeyStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -215,19 +215,19 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             boolean result = dataStore.persist(args[0]);
-            return RedisMessageHelper.integer(result ? 1 : 0);
+            return CommandResponses.integer(result ? 1 : 0);
         }
     }
 
     // ==================== RENAME ====================
 
-    @RedisCommand(name = "RENAME", arity = 3)
+    @RedisCommand
     public static class KeyRenameCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final KeyStore dataStore;
 
-        public KeyRenameCommand(DataStore dataStore) {
+        public KeyRenameCommand(KeyStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -242,19 +242,19 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             dataStore.rename(args[0], args[1]);
-            return RedisMessageHelper.ok();
+            return CommandResponses.ok();
         }
     }
 
     // ==================== TYPE ====================
 
-    @RedisCommand(name = "TYPE", arity = 2)
+    @RedisCommand
     public static class KeyTypeCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final KeyStore dataStore;
 
-        public KeyTypeCommand(DataStore dataStore) {
+        public KeyTypeCommand(KeyStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -269,19 +269,19 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String type = dataStore.type(args[0]).name().toLowerCase();
-            return RedisMessageHelper.simpleString(type);
+            return CommandResponses.simpleString(type);
         }
     }
 
     // ==================== KEYS ====================
 
-    @RedisCommand(name = "KEYS", arity = 2)
+    @RedisCommand
     public static class KeyKeysCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final KeyStore dataStore;
 
-        public KeyKeysCommand(DataStore dataStore) {
+        public KeyKeysCommand(KeyStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -296,21 +296,21 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             Set<String> keys = dataStore.keys(args[0]);
-            return RedisMessageHelper.array(keys.stream()
-                    .map(RedisMessageHelper::bulkString)
+            return CommandResponses.array(keys.stream()
+                    .map(CommandResponses::bulkString)
                     .toList());
         }
     }
 
     // ==================== DBSIZE ====================
 
-    @RedisCommand(name = "DBSIZE", arity = 1)
+    @RedisCommand
     public static class KeyDbSizeCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final KeyStore dataStore;
 
-        public KeyDbSizeCommand(DataStore dataStore) {
+        public KeyDbSizeCommand(KeyStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -325,19 +325,19 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long size = dataStore.dbSize();
-            return RedisMessageHelper.integer(size);
+            return CommandResponses.integer(size);
         }
     }
 
     // ==================== FLUSHDB ====================
 
-    @RedisCommand(name = "FLUSHDB", arity = 1)
+    @RedisCommand
     public static class KeyFlushDbCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final KeyStore dataStore;
 
-        public KeyFlushDbCommand(DataStore dataStore) {
+        public KeyFlushDbCommand(KeyStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -352,19 +352,19 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             dataStore.flushDb();
-            return RedisMessageHelper.ok();
+            return CommandResponses.ok();
         }
     }
 
     // ==================== FLUSHALL ====================
 
-    @RedisCommand(name = "FLUSHALL", arity = 1)
+    @RedisCommand
     public static class KeyFlushAllCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final KeyStore dataStore;
 
-        public KeyFlushAllCommand(DataStore dataStore) {
+        public KeyFlushAllCommand(KeyStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -379,15 +379,15 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             dataStore.flushAll();
-            return RedisMessageHelper.ok();
+            return CommandResponses.ok();
         }
     }
 
     // ==================== PING ====================
 
-    @RedisCommand(name = "PING", arity = 1)
+    @RedisCommand
     public static class KeyPingCommand extends AbstractCommand {
         @Override
         public String getName() {
@@ -396,21 +396,21 @@ public class KeyCommands {
 
         @Override
         public int getArity() {
-            return 1; // 0 个参数
+            return 1; // 0 涓弬鏁?
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             if (args.length > 0 && args[0] != null && !args[0].isEmpty()) {
-                return RedisMessageHelper.bulkString(args[0]);
+                return CommandResponses.bulkString(args[0]);
             }
-            return RedisMessageHelper.pong();
+            return CommandResponses.pong();
         }
     }
 
     // ==================== ECHO ====================
 
-    @RedisCommand(name = "ECHO", arity = 2)
+    @RedisCommand
     public static class KeyEchoCommand extends AbstractCommand {
         @Override
         public String getName() {
@@ -423,14 +423,14 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
-            return RedisMessageHelper.bulkString(args[0]);
+        protected CommandResponse doExecute(String[] args) {
+            return CommandResponses.bulkString(args[0]);
         }
     }
 
     // ==================== SELECT ====================
 
-    @RedisCommand(name = "SELECT", arity = 2)
+    @RedisCommand
     public static class KeySelectCommand extends AbstractCommand {
         @Override
         public String getName() {
@@ -443,14 +443,14 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
-            return RedisMessageHelper.ok();
+        protected CommandResponse doExecute(String[] args) {
+            return CommandResponses.ok();
         }
     }
 
     // ==================== INFO ====================
 
-    @RedisCommand(name = "INFO", arity = 1)
+    @RedisCommand
     public static class KeyInfoCommand extends AbstractCommand {
         @Override
         public String getName() {
@@ -463,7 +463,7 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             StringBuilder info = new StringBuilder();
             info.append("# Server\n");
             info.append("redis_version:1.0.0\n");
@@ -471,13 +471,13 @@ public class KeyCommands {
             info.append("os:Java\n");
             info.append("# Stats\n");
             info.append("total_connections_received:1\n");
-            return RedisMessageHelper.bulkString(info.toString());
+            return CommandResponses.bulkString(info.toString());
         }
     }
 
     // ==================== TIME ====================
 
-    @RedisCommand(name = "TIME", arity = 1)
+    @RedisCommand
     public static class KeyTimeCommand extends AbstractCommand {
         @Override
         public String getName() {
@@ -490,13 +490,13 @@ public class KeyCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long now = System.currentTimeMillis();
             long seconds = now / 1000;
             long microseconds = (now % 1000) * 1000;
-            return RedisMessageHelper.array(Arrays.asList(
-                    RedisMessageHelper.bulkString(String.valueOf(seconds)),
-                    RedisMessageHelper.bulkString(String.valueOf(microseconds))
+            return CommandResponses.array(Arrays.asList(
+                    CommandResponses.bulkString(String.valueOf(seconds)),
+                    CommandResponses.bulkString(String.valueOf(microseconds))
             ));
         }
     }

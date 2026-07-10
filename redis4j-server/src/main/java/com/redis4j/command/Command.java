@@ -1,11 +1,15 @@
 package com.redis4j.command;
 
-import io.netty.handler.codec.redis.RedisMessage;
+import com.redis4j.protocol.response.CommandResponse;
 
 /**
  * 命令接口
  */
 public interface Command {
+
+    default CommandMetadata metadata() {
+        return new CommandMetadata(getName(), Arity.fromLegacy(getArity()));
+    }
 
     /**
      * 获取命令名称
@@ -22,5 +26,5 @@ public interface Command {
      * @param args 命令参数（不包括命令名称本身）
      * @return 响应
      */
-    RedisMessage execute(String[] args);
+    CommandResponse execute(String[] args);
 }

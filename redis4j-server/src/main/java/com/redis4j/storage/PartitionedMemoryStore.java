@@ -1,6 +1,10 @@
 package com.redis4j.storage;
 
 import com.redis4j.storage.type.*;
+import com.redis4j.storage.expiration.ExpirationPolicy;
+import com.redis4j.storage.expiration.IndexedExpirationPolicy;
+import com.redis4j.storage.repository.ConcurrentMapEntryRepository;
+import com.redis4j.storage.repository.EntryRepository;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -45,7 +49,7 @@ public class PartitionedMemoryStore implements DataStore {
     }
 
     private int getPartitionIndex(String key) {
-        return hash(key) % numPartitions;
+        return Math.floorMod(hash(key), numPartitions);
     }
 
     private static int hash(String key) {
@@ -133,7 +137,7 @@ public class PartitionedMemoryStore implements DataStore {
             }
             throw new IllegalStateException("Value is not a string");
         });
-        p.expiryIndex.remove(key, entry.getExpireAt());
+        updateExpiryIndex(p, key, entry);
         return Long.parseLong(((RedisString) p.store.get(key).getValue()).getStringValue());
     }
 
@@ -169,7 +173,7 @@ public class PartitionedMemoryStore implements DataStore {
             }
             throw new IllegalStateException("Value is not a string");
         });
-        p.expiryIndex.remove(key, entry.getExpireAt());
+        updateExpiryIndex(p, key, entry);
         RedisString rv = (RedisString) p.store.get(key).getValue();
         return rv.getStringValue().length();
     }
@@ -243,6 +247,9 @@ public class PartitionedMemoryStore implements DataStore {
             p.store.remove(key, entry);
             p.expiryIndex.remove(key);
             return -2;
+        }
+        if (entry.isPersistent()) {
+            return -1;
         }
         long remaining = entry.getExpireAt() - System.currentTimeMillis();
         if (remaining <= 0) {
@@ -788,6 +795,14 @@ public class PartitionedMemoryStore implements DataStore {
         }
     }
 
+    private void updateExpiryIndex(Partition partition, String key, Entry entry) {
+        if (entry.isPersistent()) {
+            partition.expiryIndex.remove(key);
+        } else {
+            partition.expiryIndex.put(key, entry.getExpireAt());
+        }
+    }
+
     private <T> T modifyList(String key, java.util.function.Function<RedisList, T> operation) {
         Partition p = getPartition(key);
         while (true) {
@@ -925,12 +940,12 @@ public class PartitionedMemoryStore implements DataStore {
      * 单个分区
      */
     private static class Partition {
-        final ConcurrentHashMap<String, Entry> store;
-        final ConcurrentHashMap<String, Long> expiryIndex;
+        final EntryRepository store;
+        final ExpirationPolicy expiryIndex;
 
         Partition() {
-            this.store = new ConcurrentHashMap<>();
-            this.expiryIndex = new ConcurrentHashMap<>();
+            this.store = new ConcurrentMapEntryRepository();
+            this.expiryIndex = new IndexedExpirationPolicy();
         }
     }
 }

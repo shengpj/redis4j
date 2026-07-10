@@ -29,13 +29,6 @@ public final class DataStoreFactory {
                 int partitions = partitionCount != null ? partitionCount : Runtime.getRuntime().availableProcessors();
                 return new PartitionedMemoryStore(partitions);
 
-            case ECLIPSE_COLLECTIONS:
-                return new EclipseCollectionsStore();
-
-            case CAFFEINE:
-                int max =  10000;
-                return new CaffeineStore(max);
-
             default:
                 throw new IllegalArgumentException("Unknown storage type: " + type);
         }
@@ -57,7 +50,7 @@ public final class DataStoreFactory {
             type = StorageType.valueOf(typeName.toUpperCase());
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException("Unknown storage type: " + typeName +
-                ". Available types: MEMORY, PARTITIONED, ECLIPSE_COLLECTIONS");
+                ". Available types: MEMORY, PARTITIONED");
         }
         return create(type, partitionCount);
     }

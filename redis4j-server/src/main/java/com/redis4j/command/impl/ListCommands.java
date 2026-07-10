@@ -2,24 +2,24 @@ package com.redis4j.command.impl;
 
 import com.redis4j.command.AbstractCommand;
 import com.redis4j.command.annotation.RedisCommand;
-import com.redis4j.protocol.RedisMessageHelper;
-import com.redis4j.storage.DataStore;
-import io.netty.handler.codec.redis.RedisMessage;
+import com.redis4j.protocol.response.CommandResponses;
+import com.redis4j.storage.ListStore;
+import com.redis4j.protocol.response.CommandResponse;
 
 import java.util.Arrays;
 
 /**
- * List 命令实现
+ * List 鍛戒护瀹炵幇
  */
 public class ListCommands {
 
     // ==================== LPUSH ====================
 
-    @RedisCommand(name = "LPUSH", arity = -2)
+    @RedisCommand
     public static class ListLPushCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final ListStore dataStore;
 
-        public ListLPushCommand(DataStore dataStore) {
+        public ListLPushCommand(ListStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -30,7 +30,7 @@ public class ListCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 2 个参数
+            return -2; // 鑷冲皯 2 涓弬鏁?
         }
 
         @Override
@@ -39,21 +39,21 @@ public class ListCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String key = args[0];
             String[] values = Arrays.copyOfRange(args, 1, args.length);
             long length = dataStore.lPush(key, values);
-            return RedisMessageHelper.integer(length);
+            return CommandResponses.integer(length);
         }
     }
 
     // ==================== RPUSH ====================
 
-    @RedisCommand(name = "RPUSH", arity = -2)
+    @RedisCommand
     public static class ListRPushCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final ListStore dataStore;
 
-        public ListRPushCommand(DataStore dataStore) {
+        public ListRPushCommand(ListStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -64,7 +64,7 @@ public class ListCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 2 个参数
+            return -2; // 鑷冲皯 2 涓弬鏁?
         }
 
         @Override
@@ -73,21 +73,21 @@ public class ListCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String key = args[0];
             String[] values = Arrays.copyOfRange(args, 1, args.length);
             long length = dataStore.rPush(key, values);
-            return RedisMessageHelper.integer(length);
+            return CommandResponses.integer(length);
         }
     }
 
     // ==================== LPOP ====================
 
-    @RedisCommand(name = "LPOP", arity = 2)
+    @RedisCommand
     public static class ListLPopCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final ListStore dataStore;
 
-        public ListLPopCommand(DataStore dataStore) {
+        public ListLPopCommand(ListStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -102,19 +102,19 @@ public class ListCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String value = dataStore.lPop(args[0]);
-            return RedisMessageHelper.bulkString(value);
+            return CommandResponses.bulkString(value);
         }
     }
 
     // ==================== RPOP ====================
 
-    @RedisCommand(name = "RPOP", arity = 2)
+    @RedisCommand
     public static class ListRPopCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final ListStore dataStore;
 
-        public ListRPopCommand(DataStore dataStore) {
+        public ListRPopCommand(ListStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -129,19 +129,19 @@ public class ListCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String value = dataStore.rPop(args[0]);
-            return RedisMessageHelper.bulkString(value);
+            return CommandResponses.bulkString(value);
         }
     }
 
     // ==================== LLEN ====================
 
-    @RedisCommand(name = "LLEN", arity = 2)
+    @RedisCommand
     public static class ListLLenCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final ListStore dataStore;
 
-        public ListLLenCommand(DataStore dataStore) {
+        public ListLLenCommand(ListStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -156,19 +156,19 @@ public class ListCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long length = dataStore.lLen(args[0]);
-            return RedisMessageHelper.integer(length);
+            return CommandResponses.integer(length);
         }
     }
 
     // ==================== LRANGE ====================
 
-    @RedisCommand(name = "LRANGE", arity = 4)
+    @RedisCommand
     public static class ListLRangeCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final ListStore dataStore;
 
-        public ListLRangeCommand(DataStore dataStore) {
+        public ListLRangeCommand(ListStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -183,24 +183,24 @@ public class ListCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String key = args[0];
             long start = parseLong(args[1]);
             long stop = parseLong(args[2]);
             String[] values = dataStore.lRange(key, start, stop);
-            return RedisMessageHelper.array(Arrays.stream(values)
-                    .map(RedisMessageHelper::bulkString)
+            return CommandResponses.array(Arrays.stream(values)
+                    .map(CommandResponses::bulkString)
                     .toList());
         }
     }
 
     // ==================== LINDEX ====================
 
-    @RedisCommand(name = "LINDEX", arity = 3)
+    @RedisCommand
     public static class ListLIndexCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final ListStore dataStore;
 
-        public ListLIndexCommand(DataStore dataStore) {
+        public ListLIndexCommand(ListStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -215,20 +215,20 @@ public class ListCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long index = parseLong(args[1]);
             String value = dataStore.lIndex(args[0], index);
-            return RedisMessageHelper.bulkString(value);
+            return CommandResponses.bulkString(value);
         }
     }
 
     // ==================== LSET ====================
 
-    @RedisCommand(name = "LSET", arity = 4)
+    @RedisCommand
     public static class ListLSetCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final ListStore dataStore;
 
-        public ListLSetCommand(DataStore dataStore) {
+        public ListLSetCommand(ListStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -243,21 +243,21 @@ public class ListCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long index = parseLong(args[1]);
             String value = args[2];
             dataStore.lSet(args[0], index, value);
-            return RedisMessageHelper.ok();
+            return CommandResponses.ok();
         }
     }
 
     // ==================== LTRIM ====================
 
-    @RedisCommand(name = "LTRIM", arity = 4)
+    @RedisCommand
     public static class ListLTrimCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final ListStore dataStore;
 
-        public ListLTrimCommand(DataStore dataStore) {
+        public ListLTrimCommand(ListStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -272,11 +272,11 @@ public class ListCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long start = parseLong(args[1]);
             long stop = parseLong(args[2]);
             dataStore.lTrim(args[0], start, stop);
-            return RedisMessageHelper.ok();
+            return CommandResponses.ok();
         }
     }
 }

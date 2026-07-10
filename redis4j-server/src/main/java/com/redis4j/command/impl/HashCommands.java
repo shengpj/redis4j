@@ -2,24 +2,24 @@ package com.redis4j.command.impl;
 
 import com.redis4j.command.AbstractCommand;
 import com.redis4j.command.annotation.RedisCommand;
-import com.redis4j.protocol.RedisMessageHelper;
-import com.redis4j.storage.DataStore;
-import io.netty.handler.codec.redis.RedisMessage;
+import com.redis4j.protocol.response.CommandResponses;
+import com.redis4j.storage.HashStore;
+import com.redis4j.protocol.response.CommandResponse;
 
 import java.util.*;
 
 /**
- * Hash 命令实现
+ * Hash 鍛戒护瀹炵幇
  */
 public class HashCommands {
 
     // ==================== HSET ====================
 
-    @RedisCommand(name = "HSET", arity = -2)
+    @RedisCommand
     public static class HashHSetCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final HashStore dataStore;
 
-        public HashHSetCommand(DataStore dataStore) {
+        public HashHSetCommand(HashStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -30,7 +30,7 @@ public class HashCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 3 个参数
+            return -2; // 鑷冲皯 3 涓弬鏁?
         }
 
         @Override
@@ -39,7 +39,7 @@ public class HashCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String key = args[0];
             long count = 0;
             for (int i = 1; i < args.length; i += 2) {
@@ -48,17 +48,17 @@ public class HashCommands {
                     count += result;
                 }
             }
-            return RedisMessageHelper.integer(count);
+            return CommandResponses.integer(count);
         }
     }
 
     // ==================== HSETNX ====================
 
-    @RedisCommand(name = "HSETNX", arity = 4)
+    @RedisCommand
     public static class HashHSetNxCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final HashStore dataStore;
 
-        public HashHSetNxCommand(DataStore dataStore) {
+        public HashHSetNxCommand(HashStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -73,19 +73,19 @@ public class HashCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             boolean result = dataStore.hSetNx(args[0], args[1], args[2]);
-            return RedisMessageHelper.integer(result ? 1 : 0);
+            return CommandResponses.integer(result ? 1 : 0);
         }
     }
 
     // ==================== HGET ====================
 
-    @RedisCommand(name = "HGET", arity = 3)
+    @RedisCommand
     public static class HashHGetCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final HashStore dataStore;
 
-        public HashHGetCommand(DataStore dataStore) {
+        public HashHGetCommand(HashStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -100,19 +100,19 @@ public class HashCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String value = dataStore.hGet(args[0], args[1]);
-            return RedisMessageHelper.bulkString(value);
+            return CommandResponses.bulkString(value);
         }
     }
 
     // ==================== HGETALL ====================
 
-    @RedisCommand(name = "HGETALL", arity = 2)
+    @RedisCommand
     public static class HashHGetAllCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final HashStore dataStore;
 
-        public HashHGetAllCommand(DataStore dataStore) {
+        public HashHGetAllCommand(HashStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -127,24 +127,24 @@ public class HashCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             Map<String, String> map = dataStore.hGetAll(args[0]);
-            List<RedisMessage> result = new ArrayList<>();
+            List<CommandResponse> result = new ArrayList<>();
             for (Map.Entry<String, String> entry : map.entrySet()) {
-                result.add(RedisMessageHelper.bulkString(entry.getKey()));
-                result.add(RedisMessageHelper.bulkString(entry.getValue()));
+                result.add(CommandResponses.bulkString(entry.getKey()));
+                result.add(CommandResponses.bulkString(entry.getValue()));
             }
-            return RedisMessageHelper.array(result);
+            return CommandResponses.array(result);
         }
     }
 
     // ==================== HDEL ====================
 
-    @RedisCommand(name = "HDEL", arity = -2)
+    @RedisCommand
     public static class HashHDelCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final HashStore dataStore;
 
-        public HashHDelCommand(DataStore dataStore) {
+        public HashHDelCommand(HashStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -155,7 +155,7 @@ public class HashCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 2 个参数
+            return -2; // 鑷冲皯 2 涓弬鏁?
         }
 
         @Override
@@ -164,21 +164,21 @@ public class HashCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String key = args[0];
             String[] fields = Arrays.copyOfRange(args, 1, args.length);
             long count = dataStore.hDel(key, fields);
-            return RedisMessageHelper.integer(count);
+            return CommandResponses.integer(count);
         }
     }
 
     // ==================== HEXISTS ====================
 
-    @RedisCommand(name = "HEXISTS", arity = 3)
+    @RedisCommand
     public static class HashHExistsCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final HashStore dataStore;
 
-        public HashHExistsCommand(DataStore dataStore) {
+        public HashHExistsCommand(HashStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -193,19 +193,19 @@ public class HashCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             boolean exists = dataStore.hExists(args[0], args[1]);
-            return RedisMessageHelper.integer(exists ? 1 : 0);
+            return CommandResponses.integer(exists ? 1 : 0);
         }
     }
 
     // ==================== HLEN ====================
 
-    @RedisCommand(name = "HLEN", arity = 2)
+    @RedisCommand
     public static class HashHLenCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final HashStore dataStore;
 
-        public HashHLenCommand(DataStore dataStore) {
+        public HashHLenCommand(HashStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -220,19 +220,19 @@ public class HashCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long length = dataStore.hLen(args[0]);
-            return RedisMessageHelper.integer(length);
+            return CommandResponses.integer(length);
         }
     }
 
     // ==================== HKEYS ====================
 
-    @RedisCommand(name = "HKEYS", arity = 2)
+    @RedisCommand
     public static class HashHKeysCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final HashStore dataStore;
 
-        public HashHKeysCommand(DataStore dataStore) {
+        public HashHKeysCommand(HashStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -247,21 +247,21 @@ public class HashCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             Set<String> keys = dataStore.hKeys(args[0]);
-            return RedisMessageHelper.array(keys.stream()
-                    .map(RedisMessageHelper::bulkString)
+            return CommandResponses.array(keys.stream()
+                    .map(CommandResponses::bulkString)
                     .toList());
         }
     }
 
     // ==================== HVALS ====================
 
-    @RedisCommand(name = "HVALS", arity = 2)
+    @RedisCommand
     public static class HashHValsCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final HashStore dataStore;
 
-        public HashHValsCommand(DataStore dataStore) {
+        public HashHValsCommand(HashStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -276,21 +276,21 @@ public class HashCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String[] vals = dataStore.hVals(args[0]);
-            return RedisMessageHelper.array(Arrays.stream(vals)
-                    .map(RedisMessageHelper::bulkString)
+            return CommandResponses.array(Arrays.stream(vals)
+                    .map(CommandResponses::bulkString)
                     .toList());
         }
     }
 
     // ==================== HMSET ====================
 
-    @RedisCommand(name = "HMSET", arity = -2)
+    @RedisCommand
     public static class HashHMSetCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final HashStore dataStore;
 
-        public HashHMSetCommand(DataStore dataStore) {
+        public HashHMSetCommand(HashStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -301,7 +301,7 @@ public class HashCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 3 个参数
+            return -2; // 鑷冲皯 3 涓弬鏁?
         }
 
         @Override
@@ -310,24 +310,24 @@ public class HashCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String key = args[0];
             Map<String, String> map = new HashMap<>();
             for (int i = 1; i < args.length; i += 2) {
                 map.put(args[i], args[i + 1]);
             }
             dataStore.hMSet(key, map);
-            return RedisMessageHelper.ok();
+            return CommandResponses.ok();
         }
     }
 
     // ==================== HMGET ====================
 
-    @RedisCommand(name = "HMGET", arity = -2)
+    @RedisCommand
     public static class HashHMGetCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final HashStore dataStore;
 
-        public HashHMGetCommand(DataStore dataStore) {
+        public HashHMGetCommand(HashStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -338,7 +338,7 @@ public class HashCommands {
 
         @Override
         public int getArity() {
-            return -2; // 至少 2 个参数
+            return -2; // 鑷冲皯 2 涓弬鏁?
         }
 
         @Override
@@ -347,23 +347,23 @@ public class HashCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             String key = args[0];
             String[] fields = Arrays.copyOfRange(args, 1, args.length);
             String[] values = dataStore.hMGet(key, fields);
-            return RedisMessageHelper.array(Arrays.stream(values)
-                    .map(RedisMessageHelper::bulkString)
+            return CommandResponses.array(Arrays.stream(values)
+                    .map(CommandResponses::bulkString)
                     .toList());
         }
     }
 
     // ==================== HINCRBY ====================
 
-    @RedisCommand(name = "HINCRBY", arity = 4)
+    @RedisCommand
     public static class HashHIncrByCommand extends AbstractCommand {
-        private final DataStore dataStore;
+        private final HashStore dataStore;
 
-        public HashHIncrByCommand(DataStore dataStore) {
+        public HashHIncrByCommand(HashStore dataStore) {
             this.dataStore = dataStore;
         }
 
@@ -378,10 +378,10 @@ public class HashCommands {
         }
 
         @Override
-        protected RedisMessage doExecute(String[] args) {
+        protected CommandResponse doExecute(String[] args) {
             long delta = parseLong(args[2]);
             long result = dataStore.hIncrBy(args[0], args[1], delta);
-            return RedisMessageHelper.integer(result);
+            return CommandResponses.integer(result);
         }
     }
 }

@@ -1,6 +1,10 @@
 package com.redis4j.storage;
 
 import com.redis4j.storage.type.*;
+import com.redis4j.storage.expiration.ExpirationPolicy;
+import com.redis4j.storage.expiration.IndexedExpirationPolicy;
+import com.redis4j.storage.repository.ConcurrentMapEntryRepository;
+import com.redis4j.storage.repository.EntryRepository;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -11,13 +15,13 @@ import java.util.concurrent.*;
  */
 public class MemoryStore implements DataStore {
 
-    private final ConcurrentHashMap<String, Entry> store;
-    private final ConcurrentHashMap<String, Long> expiryIndex;
+    private final EntryRepository store;
+    private final ExpirationPolicy expiryIndex;
     private final ScheduledExecutorService scheduler;
 
     public MemoryStore() {
-        this.store = new ConcurrentHashMap<>();
-        this.expiryIndex = new ConcurrentHashMap<>();
+        this.store = new ConcurrentMapEntryRepository();
+        this.expiryIndex = new IndexedExpirationPolicy();
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "expiry-cleaner");
             t.setDaemon(true);

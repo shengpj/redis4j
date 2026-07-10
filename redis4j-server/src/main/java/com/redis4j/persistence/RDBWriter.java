@@ -1,7 +1,9 @@
 package com.redis4j.persistence;
 
-import com.redis4j.storage.DataStore;
 import com.redis4j.storage.DataType;
+import com.redis4j.storage.snapshot.DataSnapshot;
+import com.redis4j.storage.snapshot.SnapshotEntry;
+import com.redis4j.storage.snapshot.SnapshotProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -11,115 +13,93 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.StandardOpenOption;
+import java.util.EnumMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * RDB 文件写入器 — NIO 版本
- *
- * 使用 FileChannel + ByteBuffer 替代 BIO 的 FileOutputStream/BufferedOutputStream，
- * 消除每次写操作的系统调用。写入过程不创建中间 Entry/RedisValue 对象，
- * 直接从 DataStore 流式序列化到 ByteBuffer。
- *
- * 格式（大端字节序）：
- *   HEADER(9) VERSION(4)
- *   SELECTDB(1) DB_NUM(4)
- *   [ENTRY]...
- *   EOF(1) CHECKSUM(4)
- *
- * ENTRY 格式：
- *   MARKER(1=0xC0) KEY_LEN(4) KEY_BYTES EXPIRE_FLAG(1) [EXPIRE_MS(8)] TYPE(1) VALUE...
- *
- * TYPE 格式：
- *   0x00 = String:  VAL_LEN(4) VAL_BYTES
- *   0x01 = List:     COUNT(4) [VAL_LEN(4) VAL_BYTES]...
- *   0x02 = Set:      COUNT(4) [VAL_LEN(4) VAL_BYTES]...
- *   0x04 = Hash:     COUNT(4) [FLD_LEN(4) FLD_BYTES VAL_LEN(4) VAL_BYTES]...
- */
+/** Writes the Redis4J snapshot format using a stable DataSnapshot. */
 public class RDBWriter {
-
     private static final Logger logger = LoggerFactory.getLogger(RDBWriter.class);
-
-    private static final byte[] RDB_HEADER = "REDIS0011".getBytes();
-    private static final byte ENTRY_MARKER = (byte) 0xC0;
-    private static final byte TYPE_STRING = 0x00;
-    private static final byte TYPE_LIST = 0x01;
-    private static final byte TYPE_SET = 0x02;
-    private static final byte TYPE_HASH = 0x04;
-
+    private static final byte[] RDB_HEADER = "REDIS0011".getBytes(StandardCharsets.US_ASCII);
     private static final int BUFFER_SIZE = 64 * 1024;
 
     private FileChannel channel;
     private ByteBuffer buffer;
+    private final Map<DataType, SnapshotValueWriter> codecs = createCodecs();
 
-    public void save(DataStore dataStore, String filePath) throws IOException {
+    public void save(SnapshotProvider snapshotProvider, String filePath) throws IOException {
         logger.info("Saving RDB file to {}", filePath);
-
         File file = new File(filePath);
         File parent = file.getParentFile();
-        if (parent != null && !parent.exists()) {
-            parent.mkdirs();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new IOException("Unable to create data directory: " + parent);
         }
 
         long start = System.currentTimeMillis();
-
-        try (FileChannel ch = FileChannel.open(file.toPath(),
-                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
-            this.channel = ch;
-            this.buffer = ByteBuffer.allocateDirect(BUFFER_SIZE);
-
+        DataSnapshot snapshot = snapshotProvider.createSnapshot();
+        try (FileChannel output = FileChannel.open(file.toPath(), StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+            channel = output;
+            buffer = ByteBuffer.allocateDirect(BUFFER_SIZE);
             writeHeader();
-            writeKeyValues(dataStore);
+            writeEntries(snapshot);
             writeFooter();
             flushBuffer();
             channel.force(true);
         }
-
-        long elapsed = System.currentTimeMillis() - start;
-        logger.info("RDB file saved successfully in {} ms: {}", elapsed, filePath);
+        logger.info("RDB file saved successfully in {} ms: {}", System.currentTimeMillis() - start, filePath);
     }
 
-    // ==================== Buffer management ====================
-
-    private void flushBuffer() throws IOException {
-        buffer.flip();
-        while (buffer.hasRemaining()) {
-            channel.write(buffer);
+    private void writeEntries(DataSnapshot snapshot) throws IOException {
+        int count = 0;
+        for (SnapshotEntry entry : snapshot.entries()) {
+            SnapshotValueWriter codec = codecs.get(entry.type());
+            if (codec == null || entry.expireAt() > 0 && entry.expireAt() <= System.currentTimeMillis()) continue;
+            ensure(512);
+            buffer.put((byte) 0xC0);
+            writeString(entry.key());
+            boolean expires = entry.expireAt() > 0;
+            buffer.put(expires ? (byte) 1 : (byte) 0);
+            if (expires) writeInt64(entry.expireAt());
+            codec.write(entry);
+            count++;
         }
-        buffer.clear();
+        logger.debug("Wrote {} key-value pairs to RDB", count);
     }
 
-    private void ensure(int bytes) throws IOException {
-        if (buffer.remaining() < bytes) {
-            flushBuffer();
-        }
+    private Map<DataType, SnapshotValueWriter> createCodecs() {
+        Map<DataType, SnapshotValueWriter> result = new EnumMap<>(DataType.class);
+        result.put(DataType.STRING, entry -> {
+            buffer.put((byte) 0x00);
+            writeString((String) entry.value());
+        });
+        result.put(DataType.LIST, entry -> {
+            buffer.put((byte) 0x01);
+            List<String> values = cast(entry.value());
+            writeInt32(values.size());
+            for (String value : values) writeString(value);
+        });
+        result.put(DataType.SET, entry -> {
+            buffer.put((byte) 0x02);
+            Set<String> values = cast(entry.value());
+            writeInt32(values.size());
+            for (String value : values) writeString(value);
+        });
+        result.put(DataType.HASH, entry -> {
+            buffer.put((byte) 0x04);
+            Map<String, String> values = cast(entry.value());
+            writeInt32(values.size());
+            for (Map.Entry<String, String> value : values.entrySet()) {
+                writeString(value.getKey());
+                writeString(value.getValue());
+            }
+        });
+        return result;
     }
 
-    // ==================== Write primitives ====================
-
-    private void writeInt32(int val) throws IOException {
-        ensure(4);
-        buffer.putInt(val);
-    }
-
-    private void writeInt64(long val) throws IOException {
-        ensure(8);
-        buffer.putLong(val);
-    }
-
-    private void writeString(String value) throws IOException {
-        if (value == null) {
-            ensure(4);
-            buffer.putInt(-1);
-            return;
-        }
-        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
-        ensure(4 + bytes.length);
-        buffer.putInt(bytes.length);
-        buffer.put(bytes);
-    }
-
-    // ==================== File structure ====================
+    @SuppressWarnings("unchecked")
+    private static <T> T cast(Object value) { return (T) value; }
 
     private void writeHeader() throws IOException {
         ensure(18);
@@ -135,78 +115,39 @@ public class RDBWriter {
         buffer.putInt(0);
     }
 
-    // ==================== Key-value serialization ====================
-
-    /**
-     * 遍历所有 key 并直接序列化到 ByteBuffer。
-     * 不创建任何中间 Entry / RedisList / RedisSet / RedisHash 对象。
-     */
-    private void writeKeyValues(DataStore dataStore) throws IOException {
-        Set<String> keys = dataStore.getAllKeys();
-        int count = 0;
-        for (String key : keys) {
-            DataType type = dataStore.type(key);
-            if (type == DataType.NONE || type == DataType.ZSET) continue;
-
-            long ttl = dataStore.ttl(key);
-            long expireAt = ttl > 0 ? System.currentTimeMillis() + ttl * 1000 : -1;
-
-            // 跳过已过期的 key
-            if (expireAt > 0 && expireAt <= System.currentTimeMillis()) continue;
-
-            // 预分配常见条目的估算空间：标记 + key + expire + 类型头
-            ensure(512);
-
-            buffer.put(ENTRY_MARKER);
-            writeString(key);
-            boolean hasExpire = expireAt > 0;
-            buffer.put(hasExpire ? (byte) 0x01 : (byte) 0x00);
-            if (hasExpire) {
-                buffer.putLong(expireAt);
-            }
-
-            switch (type) {
-                case STRING -> writeStringValue(dataStore, key);
-                case LIST -> writeListValue(dataStore, key);
-                case SET -> writeSetValue(dataStore, key);
-                case HASH -> writeHashValue(dataStore, key);
-            }
-            count++;
+    private void writeString(String value) throws IOException {
+        if (value == null) {
+            writeInt32(-1);
+            return;
         }
-        logger.debug("Wrote {} key-value pairs to RDB", count);
-    }
-
-    private void writeStringValue(DataStore dataStore, String key) throws IOException {
-        buffer.put(TYPE_STRING);
-        String value = dataStore.get(key);
-        writeString(value);
-    }
-
-    private void writeListValue(DataStore dataStore, String key) throws IOException {
-        buffer.put(TYPE_LIST);
-        String[] elems = dataStore.lRange(key, 0, -1);
-        writeInt32(elems.length);
-        for (String elem : elems) {
-            writeString(elem);
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        writeInt32(bytes.length);
+        if (bytes.length > buffer.capacity()) {
+            flushBuffer();
+            ByteBuffer largeValue = ByteBuffer.wrap(bytes);
+            while (largeValue.hasRemaining()) channel.write(largeValue);
+        } else {
+            ensure(bytes.length);
+            buffer.put(bytes);
         }
     }
 
-    private void writeSetValue(DataStore dataStore, String key) throws IOException {
-        buffer.put(TYPE_SET);
-        Set<String> members = dataStore.sMembers(key);
-        writeInt32(members.size());
-        for (String member : members) {
-            writeString(member);
-        }
+    private void writeInt32(int value) throws IOException { ensure(4); buffer.putInt(value); }
+    private void writeInt64(long value) throws IOException { ensure(8); buffer.putLong(value); }
+
+    private void ensure(int bytes) throws IOException {
+        if (bytes > buffer.capacity()) throw new IOException("RDB value exceeds write buffer");
+        if (buffer.remaining() < bytes) flushBuffer();
     }
 
-    private void writeHashValue(DataStore dataStore, String key) throws IOException {
-        buffer.put(TYPE_HASH);
-        Map<String, String> fields = dataStore.hGetAll(key);
-        writeInt32(fields.size());
-        for (Map.Entry<String, String> entry : fields.entrySet()) {
-            writeString(entry.getKey());
-            writeString(entry.getValue());
-        }
+    private void flushBuffer() throws IOException {
+        buffer.flip();
+        while (buffer.hasRemaining()) channel.write(buffer);
+        buffer.clear();
+    }
+
+    @FunctionalInterface
+    private interface SnapshotValueWriter {
+        void write(SnapshotEntry entry) throws IOException;
     }
 }

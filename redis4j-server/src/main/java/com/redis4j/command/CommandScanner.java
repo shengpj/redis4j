@@ -148,14 +148,18 @@ public class CommandScanner {
                         !clazz.isInterface() &&
                         !Modifier.isAbstract(clazz.getModifiers())) {
 
-                    Constructor<?> constructor = clazz.getDeclaredConstructor(DataStore.class);
+                    Constructor<?> constructor = Arrays.stream(clazz.getDeclaredConstructors())
+                            .filter(candidate -> candidate.getParameterCount() == 1)
+                            .filter(candidate -> candidate.getParameterTypes()[0].isInstance(dataStore))
+                            .findFirst()
+                            .orElseThrow(NoSuchMethodException::new);
                     Command command = (Command) constructor.newInstance(dataStore);
                     commands.add(command);
                 }
             } catch (ClassNotFoundException e) {
                 logger.trace("Could not load class: {}", className);
             } catch (NoSuchMethodException e) {
-                logger.trace("Class {} has no (DataStore) constructor, skipping", className);
+                logger.trace("Class {} has no supported store constructor, skipping", className);
             } catch (Exception e) {
                 logger.trace("Could not instantiate command class: {}", className, e);
             }

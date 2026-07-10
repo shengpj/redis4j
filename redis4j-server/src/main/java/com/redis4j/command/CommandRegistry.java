@@ -1,9 +1,9 @@
 package com.redis4j.command;
 
 import com.redis4j.command.impl.*;
-import com.redis4j.protocol.RedisMessageHelper;
+import com.redis4j.protocol.response.CommandResponse;
+import com.redis4j.protocol.response.CommandResponses;
 import com.redis4j.storage.DataStore;
-import io.netty.handler.codec.redis.RedisMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,7 +31,7 @@ public class CommandRegistry {
      * 注册命令
      */
     public void register(Command command) {
-        commands.put(command.getName().toUpperCase(), command);
+        commands.put(command.metadata().name(), command);
     }
 
     /**
@@ -44,17 +44,17 @@ public class CommandRegistry {
     /**
      * 执行命令
      */
-    public RedisMessage execute(String commandName, String[] args) {
+    public CommandResponse execute(String commandName, String[] args) {
         Command command = find(commandName);
         if (command == null) {
-            return RedisMessageHelper.error("ERR unknown command '" + commandName + "'");
+            return CommandResponses.error("ERR unknown command '" + commandName + "'");
         }
 
         try {
             return command.execute(args);
         } catch (Exception e) {
             logger.error("Error executing command: {}", commandName, e);
-            return RedisMessageHelper.error("ERR " + e.getMessage());
+            return CommandResponses.error("ERR " + e.getMessage());
         }
     }
 
