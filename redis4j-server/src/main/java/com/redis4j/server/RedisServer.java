@@ -48,6 +48,7 @@ public class RedisServer {
     private final PersistenceManager persistenceManager;
     private final AofManager aofManager;
     private final PubSubBroker pubSubBroker = new PubSubBroker();
+    private final ServerObservability observability;
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -68,6 +69,7 @@ public class RedisServer {
                 config.getMaxMemoryBytes(), config.getMaxMemoryPolicy()));
         this.persistenceManager = new PersistenceManager(dataStore, config.getDataDir());
         this.aofManager = createAofManager(config);
+        this.observability = new ServerObservability(config);
         logger.info("Using DataStore type: {}", config.getDataStoreType());
     }
 
@@ -79,6 +81,7 @@ public class RedisServer {
                 config.getMaxMemoryBytes(), config.getMaxMemoryPolicy()));
         this.persistenceManager = new PersistenceManager(dataStore, config.getDataDir());
         this.aofManager = createAofManager(config);
+        this.observability = new ServerObservability(config);
     }
 
     /**
@@ -144,7 +147,7 @@ public class RedisServer {
                         pipeline.addLast(new RedisEncoder());
                         pipeline.addLast(new FlushConsolidationHandler(256, true));
                         pipeline.addLast(new NettyCodecHandler(commandRegistry, commandExecutor, pubSubBroker,
-                                config.getMaxPendingCommandsPerConnection()));
+                                observability, config.getMaxPendingCommandsPerConnection()));
                     }
                 });
 
@@ -267,6 +270,12 @@ public class RedisServer {
                 }
                 case "--maxmemory-policy" -> {
                     if (i + 1 < args.length) config.setMaxMemoryPolicy(EvictionPolicy.parse(args[++i]));
+                }
+                case "--slowlog-log-slower-than" -> {
+                    if (i + 1 < args.length) config.setSlowLogSlowerThanMicros(Long.parseLong(args[++i]));
+                }
+                case "--slowlog-max-len" -> {
+                    if (i + 1 < args.length) config.setSlowLogMaxLen(Integer.parseInt(args[++i]));
                 }
                 case "--store", "--datastore" -> {
                     if (i + 1 < args.length) {

@@ -17,6 +17,7 @@ import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 使用 Netty codec-redis 模块的处理器
@@ -31,6 +32,7 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
     private final CommandRegistry commandRegistry;
     private final ThreadPoolExecutor commandExecutor;
     private final PubSubBroker pubSubBroker;
+    private final ServerObservability observability;
     private final Deque<ParsedCommand> pendingCommands = new ArrayDeque<>();
     private boolean commandRunning;
 
@@ -38,22 +40,32 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
     private final int maxPendingCommandsPerConnection;
 
     public NettyCodecHandler(CommandRegistry commandRegistry, ThreadPoolExecutor commandExecutor) {
-        this(commandRegistry, commandExecutor, new PubSubBroker(), DEFAULT_MAX_PENDING_COMMANDS_PER_CONNECTION);
+        this(commandRegistry, commandExecutor, new PubSubBroker(),
+                new ServerObservability(new ServerConfig()), DEFAULT_MAX_PENDING_COMMANDS_PER_CONNECTION);
     }
 
     public NettyCodecHandler(CommandRegistry commandRegistry, ThreadPoolExecutor commandExecutor,
                              int maxPendingCommandsPerConnection) {
-        this(commandRegistry, commandExecutor, new PubSubBroker(), maxPendingCommandsPerConnection);
+        this(commandRegistry, commandExecutor, new PubSubBroker(),
+                new ServerObservability(new ServerConfig()), maxPendingCommandsPerConnection);
     }
 
     NettyCodecHandler(CommandRegistry commandRegistry, ThreadPoolExecutor commandExecutor,
                       PubSubBroker pubSubBroker, int maxPendingCommandsPerConnection) {
+        this(commandRegistry, commandExecutor, pubSubBroker,
+                new ServerObservability(new ServerConfig()), maxPendingCommandsPerConnection);
+    }
+
+    NettyCodecHandler(CommandRegistry commandRegistry, ThreadPoolExecutor commandExecutor,
+                      PubSubBroker pubSubBroker, ServerObservability observability,
+                      int maxPendingCommandsPerConnection) {
         if (maxPendingCommandsPerConnection <= 0) {
             throw new IllegalArgumentException("maxPendingCommandsPerConnection must be positive");
         }
         this.commandRegistry = commandRegistry;
         this.commandExecutor = commandExecutor;
         this.pubSubBroker = pubSubBroker;
+        this.observability = observability;
         this.maxPendingCommandsPerConnection = maxPendingCommandsPerConnection;
     }
 
@@ -84,6 +96,7 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
         }
 
         logger.debug("Executing command: {} {}", parsed.name(), List.of(parsed.args()));
+        observability.commandReceived(ctx.channel(), parsed.name());
 
         // 写回操作切回 EventLoop 线程，避免 Netty 内部跨线程调度
         if (pendingCommands.size() >= maxPendingCommandsPerConnection) {
@@ -145,8 +158,14 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
             return;
         }
 
+        if (observability.handles(parsed.name())) {
+            executeManagement(ctx, parsed);
+            return;
+        }
+
         try {
             commandExecutor.submit(() -> {
+                long started = System.nanoTime();
                 CommandResponse response;
                 try {
                     response = commandRegistry.execute(parsed.name(), parsed.args());
@@ -154,6 +173,8 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
                     logger.error("Error processing command", e);
                     response = new com.redis4j.protocol.response.CommandResponse.Error("ERR " + e.getMessage());
                 }
+                observability.record(ctx.channel(), parsed.name(), parsed.args(),
+                        TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - started));
                 RedisMessage completedResponse = NettyResponseAdapter.adapt(response);
                 try {
                     ctx.executor().execute(() -> completeCommand(ctx, completedResponse));
@@ -190,10 +211,37 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
         completeInline(ctx);
     }
 
+    private void executeManagement(ChannelHandlerContext ctx, ParsedCommand parsed) {
+        try {
+            commandExecutor.submit(() -> {
+                RedisMessage response;
+                try {
+                    response = observability.execute(pubSubBroker, parsed.name(), parsed.args());
+                } catch (IllegalArgumentException e) {
+                    response = RedisMessageHelper.error("ERR " + e.getMessage());
+                } catch (Exception e) {
+                    logger.error("Error processing observability command", e);
+                    response = RedisMessageHelper.error("ERR " + e.getMessage());
+                }
+                RedisMessage completedResponse = response;
+                try {
+                    ctx.executor().execute(() -> completeCommand(ctx, completedResponse));
+                } catch (RejectedExecutionException e) {
+                    io.netty.util.ReferenceCountUtil.release(completedResponse);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            completeCommand(ctx, RedisMessageHelper.error("ERR server is busy, try again later"));
+        }
+    }
+
     private void publish(ChannelHandlerContext ctx, String topic, String payload) {
         try {
             commandExecutor.submit(() -> {
+                long started = System.nanoTime();
                 RedisMessage response = RedisMessageHelper.integer(pubSubBroker.publish(topic, payload));
+                observability.record(ctx.channel(), "PUBLISH", new String[]{topic, payload},
+                        TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - started));
                 try {
                     ctx.executor().execute(() -> completeCommand(ctx, response));
                 } catch (RejectedExecutionException e) {
@@ -239,7 +287,14 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         pendingCommands.clear();
         pubSubBroker.remove(ctx.channel());
+        observability.remove(ctx.channel());
         super.channelInactive(ctx);
+    }
+
+    @Override
+    public void channelActive(ChannelHandlerContext ctx) throws Exception {
+        observability.register(ctx.channel());
+        super.channelActive(ctx);
     }
 
     /**

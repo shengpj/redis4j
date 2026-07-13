@@ -400,6 +400,51 @@ public class RedisCommands {
         return getString(response);
     }
 
+    public List<SlowLogEntry> slowLogGet(int count) throws InterruptedException {
+        if (count < 0) throw new IllegalArgumentException("count must not be negative");
+        RedisMessage response = client.sendCommand("SLOWLOG", "GET", Integer.toString(count));
+        List<RedisMessage> entries = RedisMessageHelper.extractArray(response);
+        List<SlowLogEntry> result = new ArrayList<>();
+        if (entries == null) return result;
+        for (RedisMessage value : entries) {
+            List<RedisMessage> fields = RedisMessageHelper.extractArray(value);
+            if (fields == null || fields.size() < 4) throw new IllegalStateException("invalid SLOWLOG response");
+            List<RedisMessage> commandValues = RedisMessageHelper.extractArray(fields.get(3));
+            List<String> command = commandValues == null ? List.of() : commandValues.stream()
+                    .map(this::getString)
+                    .toList();
+            result.add(new SlowLogEntry(getInteger(fields.get(0)), getInteger(fields.get(1)),
+                    getInteger(fields.get(2)), command,
+                    fields.size() > 4 ? getString(fields.get(4)) : "",
+                    fields.size() > 5 ? getString(fields.get(5)) : ""));
+        }
+        return result;
+    }
+
+    public long slowLogLen() throws InterruptedException {
+        return getInteger(client.sendCommand("SLOWLOG", "LEN"));
+    }
+
+    public void slowLogReset() throws InterruptedException {
+        client.sendCommand("SLOWLOG", "RESET");
+    }
+
+    public String clientList() throws InterruptedException {
+        return getString(client.sendCommand("CLIENT", "LIST"));
+    }
+
+    public Map<String, String> configGet(String pattern) throws InterruptedException {
+        List<RedisMessage> values = RedisMessageHelper.extractArray(
+                client.sendCommand("CONFIG", "GET", pattern));
+        Map<String, String> result = new LinkedHashMap<>();
+        if (values == null) return result;
+        if (values.size() % 2 != 0) throw new IllegalStateException("invalid CONFIG GET response");
+        for (int i = 0; i < values.size(); i += 2) {
+            result.put(getString(values.get(i)), getString(values.get(i + 1)));
+        }
+        return result;
+    }
+
     public long publish(String channel, String message) throws InterruptedException {
         return getInteger(client.sendCommand("PUBLISH", channel, message));
     }
@@ -461,6 +506,13 @@ public class RedisCommands {
     }
 
     public record ScoredValue(String member, double score) {}
+
+    public record SlowLogEntry(long id, long timestampSeconds, long durationMicros,
+                               List<String> command, String clientAddress, String clientName) {
+        public SlowLogEntry {
+            command = List.copyOf(command);
+        }
+    }
 
     // ==================== 辅助方法 ====================
 

@@ -41,6 +41,10 @@ class ResourceLimitTest {
         assertThrows(IllegalArgumentException.class, () -> config.setAutoAofRewritePercentage(-1));
         assertThrows(IllegalArgumentException.class, () -> config.setMaxMemoryBytes(-1));
         assertThrows(IllegalArgumentException.class, () -> config.setMaxMemoryPolicy(null));
+        assertThrows(IllegalArgumentException.class, () -> config.setSlowLogSlowerThanMicros(-2));
+        assertThrows(IllegalArgumentException.class, () -> config.setSlowLogMaxLen(-1));
+        assertEquals(10_000, config.getSlowLogSlowerThanMicros());
+        assertEquals(128, config.getSlowLogMaxLen());
         assertEquals(EvictionPolicy.ALLKEYS_LRU, EvictionPolicy.parse("allkeys-lru"));
     }
 }

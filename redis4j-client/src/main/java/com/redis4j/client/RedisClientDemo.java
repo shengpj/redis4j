@@ -340,6 +340,32 @@ public class RedisClientDemo {
                 if (args.length < 1) throw new IllegalArgumentException("INFO requires a section");
                 yield commands.info(args[0]);
             }
+            case "SLOWLOG" -> {
+                if (args.length == 0) throw new IllegalArgumentException("wrong number of arguments");
+                yield switch (args[0].toUpperCase(java.util.Locale.ROOT)) {
+                    case "GET" -> formatSlowLog(commands.slowLogGet(
+                            args.length > 1 ? Integer.parseInt(args[1]) : 10));
+                    case "LEN" -> String.valueOf(commands.slowLogLen());
+                    case "RESET" -> {
+                        commands.slowLogReset();
+                        yield "OK";
+                    }
+                    default -> throw new IllegalArgumentException("unknown SLOWLOG subcommand");
+                };
+            }
+            case "CLIENT" -> {
+                if (args.length != 1 || !"LIST".equalsIgnoreCase(args[0]))
+                    throw new IllegalArgumentException("only CLIENT LIST is supported");
+                yield commands.clientList();
+            }
+            case "CONFIG" -> {
+                if (args.length != 2 || !"GET".equalsIgnoreCase(args[0]))
+                    throw new IllegalArgumentException("only CONFIG GET is supported");
+                Map<String, String> values = commands.configGet(args[1]);
+                yield values.isEmpty() ? "(empty array)" : values.entrySet().stream()
+                        .map(entry -> entry.getKey() + "=" + entry.getValue())
+                        .collect(java.util.stream.Collectors.joining("\n"));
+            }
             case "PUBLISH" -> {
                 if (args.length != 2) throw new IllegalArgumentException("wrong number of arguments");
                 yield String.valueOf(commands.publish(args[0], args[1]));
@@ -423,6 +449,14 @@ public class RedisClientDemo {
         return output.toString();
     }
 
+    private static String formatSlowLog(List<RedisCommands.SlowLogEntry> entries) {
+        if (entries.isEmpty()) return "(empty array)";
+        return entries.stream()
+                .map(entry -> "id=" + entry.id() + " duration_us=" + entry.durationMicros()
+                        + " client=" + entry.clientAddress() + " command=" + String.join(" ", entry.command()))
+                .collect(java.util.stream.Collectors.joining("\n"));
+    }
+
     private static void printHelp() {
         System.out.println("""
             Supported commands:
@@ -434,6 +468,7 @@ public class RedisClientDemo {
               ZSet:    ZADD, ZREM, ZSCORE, ZCARD, ZINCRBY, ZRANGE, ZREVRANGE, ZRANK, ZREVRANK, ZCOUNT, ZRANGEBYSCORE, ZSCAN
               Server:  SELECT, ECHO, INFO MEMORY, SAVE, BGSAVE, LASTSAVE, TIME
               Pub/Sub: PUBLISH, SUBSCRIBE, UNSUBSCRIBE
+              Observe: SLOWLOG GET|LEN|RESET, CLIENT LIST, CONFIG GET
               Other:   exit, quit, help
             """);
     }

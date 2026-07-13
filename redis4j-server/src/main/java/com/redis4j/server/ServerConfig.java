@@ -4,6 +4,11 @@ import com.redis4j.storage.StorageType;
 import com.redis4j.persistence.aof.AofFlushPolicy;
 import com.redis4j.storage.memory.EvictionPolicy;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Locale;
+import java.util.Map;
+
 /**
  * Redis 服务端配置
  */
@@ -28,6 +33,8 @@ public class ServerConfig {
     private int autoAofRewritePercentage = 100;
     private long maxMemoryBytes;
     private EvictionPolicy maxMemoryPolicy = EvictionPolicy.NOEVICTION;
+    private long slowLogSlowerThanMicros = 10_000;
+    private int slowLogMaxLen = 128;
     private boolean daemon = false;
     private StorageType dataStoreType = StorageType.PARTITIONED;
 
@@ -211,6 +218,56 @@ public class ServerConfig {
         this.maxMemoryPolicy = maxMemoryPolicy;
     }
 
+    public long getSlowLogSlowerThanMicros() {
+        return slowLogSlowerThanMicros;
+    }
+
+    public void setSlowLogSlowerThanMicros(long slowLogSlowerThanMicros) {
+        if (slowLogSlowerThanMicros < -1)
+            throw new IllegalArgumentException("slowLogSlowerThanMicros cannot be less than -1");
+        this.slowLogSlowerThanMicros = slowLogSlowerThanMicros;
+    }
+
+    public int getSlowLogMaxLen() {
+        return slowLogMaxLen;
+    }
+
+    public void setSlowLogMaxLen(int slowLogMaxLen) {
+        if (slowLogMaxLen < 0) throw new IllegalArgumentException("slowLogMaxLen cannot be negative");
+        this.slowLogMaxLen = slowLogMaxLen;
+    }
+
+    public Map<String, String> asConfigMap() {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("bind", host);
+        values.put("port", Integer.toString(port));
+        values.put("worker-threads", Integer.toString(workerThreads));
+        values.put("datastore", dataStoreType.name().toLowerCase(Locale.ROOT));
+        values.put("partitions", Integer.toString(partitions));
+        values.put("max-frame-length", Integer.toString(maxFrameLength));
+        values.put("max-array-length", Integer.toString(maxArrayLength));
+        values.put("max-pending-commands-per-connection", Integer.toString(maxPendingCommandsPerConnection));
+        values.put("command-queue-capacity", Integer.toString(commandQueueCapacity));
+        values.put("dir", dataDir);
+        values.put("appendonly", yesNo(appendOnly));
+        values.put("appendfsync", appendFsync.name().toLowerCase(Locale.ROOT));
+        values.put("appendfilename", appendFilename);
+        values.put("aof-queue-capacity", Integer.toString(aofQueueCapacity));
+        values.put("aof-use-rdb-preamble", yesNo(aofUseRdbPreamble));
+        values.put("auto-aof-rewrite-min-size", Long.toString(autoAofRewriteMinSize));
+        values.put("auto-aof-rewrite-percentage", Integer.toString(autoAofRewritePercentage));
+        values.put("maxmemory", Long.toString(maxMemoryBytes));
+        values.put("maxmemory-policy", maxMemoryPolicy.name().toLowerCase(Locale.ROOT).replace('_', '-'));
+        values.put("slowlog-log-slower-than", Long.toString(slowLogSlowerThanMicros));
+        values.put("slowlog-max-len", Integer.toString(slowLogMaxLen));
+        values.put("daemonize", yesNo(daemon));
+        return Collections.unmodifiableMap(values);
+    }
+
+    private static String yesNo(boolean value) {
+        return value ? "yes" : "no";
+    }
+
     public boolean isDaemon() {
         return daemon;
     }
@@ -241,6 +298,8 @@ public class ServerConfig {
                 ", autoAofRewritePercentage=" + autoAofRewritePercentage +
                 ", maxMemoryBytes=" + maxMemoryBytes +
                 ", maxMemoryPolicy=" + maxMemoryPolicy +
+                ", slowLogSlowerThanMicros=" + slowLogSlowerThanMicros +
+                ", slowLogMaxLen=" + slowLogMaxLen +
                 ", daemon=" + daemon +
                 '}';
     }

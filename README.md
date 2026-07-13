@@ -5,11 +5,12 @@ A simplified Redis implementation in Java with Netty.
 ## Features
 
 - Full RESP (Redis Serialization Protocol) support
-- String, List, Hash, Set data types
+- String, List, Hash, Set, and Sorted Set data types
 - Key expiration management
 - RDB persistence
 - AOF persistence with sequential batch writes and configurable fsync policy
 - Netty-based high-performance network layer
+- Pub/sub and runtime observability commands
 
 ## Requirements
 
@@ -68,6 +69,17 @@ evict keys with an expiry. If a policy cannot free enough memory, the write is
 rolled back and returns an OOM error. Eviction deletes are included in AOF so
 evicted keys do not reappear after restart.
 
+Slow commands taking at least 10,000 microseconds are retained in a bounded
+128-entry log by default. Configure these limits at startup when needed:
+
+```bash
+java -jar redis4j-server/target/redis4j-server-1.0.0-SNAPSHOT.jar \
+  --slowlog-log-slower-than 5000 --slowlog-max-len 256
+```
+
+Set `--slowlog-log-slower-than -1` to disable slow logging. Runtime values can
+be inspected with `CONFIG GET slowlog-*`.
+
 ## Run Client
 
 ```bash
@@ -119,6 +131,11 @@ java -cp target/redis4j-1.0.0-SNAPSHOT.jar com.redis4j.Redis4J client -h localho
 
 ### Pub/Sub Commands
 - PUBLISH, SUBSCRIBE, UNSUBSCRIBE
+
+### Observability Commands
+- SLOWLOG GET, SLOWLOG LEN, SLOWLOG RESET
+- CLIENT LIST
+- CONFIG GET
 
 ## Architecture
 

@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -159,6 +160,24 @@ class RedisClientTest {
         }
     }
 
+    @Test
+    void observabilityResponsesAreParsedIntoClientTypes() throws Exception {
+        RedisClient client = new RedisClient("127.0.0.1", port);
+        client.connect();
+        try {
+            RedisCommands commands = new RedisCommands(client);
+            assertEquals(Map.of("maxmemory", "4096"), commands.configGet("maxmemory"));
+            assertEquals("id=1 addr=127.0.0.1:1234 cmd=client\n", commands.clientList());
+            assertEquals(1, commands.slowLogLen());
+            assertEquals(List.of(new RedisCommands.SlowLogEntry(
+                    9, 100, 250, List.of("GET", "key"), "127.0.0.1:1234", "")),
+                    commands.slowLogGet(1));
+            commands.slowLogReset();
+        } finally {
+            client.disconnect();
+        }
+    }
+
     private static final class EchoHandler extends SimpleChannelInboundHandler<RedisMessage> {
         @Override
         protected void channelRead0(ChannelHandlerContext ctx, RedisMessage msg) {
@@ -205,6 +224,37 @@ class RedisClientTest {
             }
             if ("PUBLISH".equalsIgnoreCase(command)) {
                 ctx.writeAndFlush(RedisMessageHelper.integer(1));
+                return;
+            }
+            if ("CONFIG".equalsIgnoreCase(command)) {
+                ctx.writeAndFlush(RedisMessageHelper.array(
+                        RedisMessageHelper.bulkString("maxmemory"),
+                        RedisMessageHelper.bulkString("4096")));
+                return;
+            }
+            if ("CLIENT".equalsIgnoreCase(command)) {
+                ctx.writeAndFlush(RedisMessageHelper.bulkString(
+                        "id=1 addr=127.0.0.1:1234 cmd=client\n"));
+                return;
+            }
+            if ("SLOWLOG".equalsIgnoreCase(command)) {
+                String subcommand = RedisMessageHelper.extractString(request.children().get(1));
+                if ("LEN".equalsIgnoreCase(subcommand)) {
+                    ctx.writeAndFlush(RedisMessageHelper.integer(1));
+                } else if ("RESET".equalsIgnoreCase(subcommand)) {
+                    ctx.writeAndFlush(RedisMessageHelper.ok());
+                } else {
+                    ctx.writeAndFlush(RedisMessageHelper.array(
+                            RedisMessageHelper.array(
+                                    RedisMessageHelper.integer(9),
+                                    RedisMessageHelper.integer(100),
+                                    RedisMessageHelper.integer(250),
+                                    RedisMessageHelper.array(
+                                            RedisMessageHelper.bulkString("GET"),
+                                            RedisMessageHelper.bulkString("key")),
+                                    RedisMessageHelper.bulkString("127.0.0.1:1234"),
+                                    RedisMessageHelper.bulkString(""))));
+                }
                 return;
             }
             String value = RedisMessageHelper.extractString(request.children().get(1));
