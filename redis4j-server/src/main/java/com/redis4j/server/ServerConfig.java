@@ -13,11 +13,12 @@ public class ServerConfig {
     private String host = "0.0.0.0";
     private int workerThreads = 8;
     private int maxFrameLength = 1024 * 1024;
-    private int soTimeout = 0;
+    private int maxArrayLength = 1024;
+    private int maxPendingCommandsPerConnection = 1024;
+    private int commandQueueCapacity = 1024;
     private String dataDir = "./data";
     private boolean daemon = false;
     private StorageType dataStoreType = StorageType.PARTITIONED;
-    private long cacheMaxSize = 10000;
 
     public ServerConfig() {
     }
@@ -75,15 +76,38 @@ public class ServerConfig {
     }
 
     public void setMaxFrameLength(int maxFrameLength) {
+        if (maxFrameLength <= 0) throw new IllegalArgumentException("maxFrameLength must be positive");
+        if (maxFrameLength > 512 * 1024 * 1024) {
+            throw new IllegalArgumentException("maxFrameLength cannot exceed Netty's 512 MiB RESP limit");
+        }
         this.maxFrameLength = maxFrameLength;
     }
 
-    public int getSoTimeout() {
-        return soTimeout;
+    public int getMaxArrayLength() {
+        return maxArrayLength;
     }
 
-    public void setSoTimeout(int soTimeout) {
-        this.soTimeout = soTimeout;
+    public void setMaxArrayLength(int maxArrayLength) {
+        if (maxArrayLength <= 0) throw new IllegalArgumentException("maxArrayLength must be positive");
+        this.maxArrayLength = maxArrayLength;
+    }
+
+    public int getMaxPendingCommandsPerConnection() {
+        return maxPendingCommandsPerConnection;
+    }
+
+    public void setMaxPendingCommandsPerConnection(int value) {
+        if (value <= 0) throw new IllegalArgumentException("maxPendingCommandsPerConnection must be positive");
+        this.maxPendingCommandsPerConnection = value;
+    }
+
+    public int getCommandQueueCapacity() {
+        return commandQueueCapacity;
+    }
+
+    public void setCommandQueueCapacity(int commandQueueCapacity) {
+        if (commandQueueCapacity <= 0) throw new IllegalArgumentException("commandQueueCapacity must be positive");
+        this.commandQueueCapacity = commandQueueCapacity;
     }
 
     public String getDataDir() {
@@ -96,14 +120,6 @@ public class ServerConfig {
 
     public boolean isDaemon() {
         return daemon;
-    }
-
-    public long getCacheMaxSize() {
-        return cacheMaxSize;
-    }
-
-    public void setCacheMaxSize(long cacheMaxSize) {
-        this.cacheMaxSize = cacheMaxSize;
     }
 
     public void setDaemon(boolean daemon) {
@@ -119,7 +135,9 @@ public class ServerConfig {
                 ", dataStoreType=" + dataStoreType +
                 ", partitions=" + partitions +
                 ", maxFrameLength=" + maxFrameLength +
-                ", soTimeout=" + soTimeout +
+                ", maxArrayLength=" + maxArrayLength +
+                ", maxPendingCommandsPerConnection=" + maxPendingCommandsPerConnection +
+                ", commandQueueCapacity=" + commandQueueCapacity +
                 ", dataDir='" + dataDir + '\'' +
                 ", daemon=" + daemon +
                 '}';

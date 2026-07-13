@@ -1,36 +1,46 @@
 package com.redis4j.persistence;
 
 import com.redis4j.storage.DataStore;
+import com.redis4j.storage.DataType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.BufferUnderflowException;
+import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * RDB 文件读取器 — NIO 版本
+ * Redis4J 快照文件读取器。
  *
- * 使用 FileChannel.map() 将文件映射到 MappedByteBuffer，
- * 直接在虚拟内存中解析，消除逐字节的 in.read() 系统调用。
+ * <p>采用“先完整解析并校验、再写入 DataStore”的两阶段流程，避免损坏文件
+ * 在解析到一半时向数据库恢复部分数据。</p>
  */
 public class RDBReader {
-
     private static final Logger logger = LoggerFactory.getLogger(RDBReader.class);
-
+    private static final byte[] RDB_HEADER = "REDIS0011".getBytes(StandardCharsets.US_ASCII);
+    private static final long MAX_RDB_SIZE = 1024L * 1024 * 1024;
     private static final int MAX_KEY_LENGTH = 10_000_000;
+    private static final int MAX_VALUE_LENGTH = 64 * 1024 * 1024;
+    private static final int MAX_COLLECTION_ENTRIES = 1_000_000;
 
-    private long lastSaveTimestamp = 0;
+    private long lastSaveTimestamp;
+    // 文件中的类型编码映射到对应的反序列化策略。
     private final Map<Integer, ValueReader> codecs = Map.of(
-            0x00, this::restoreString,
-            0x01, this::restoreList,
-            0x02, this::restoreSet,
-            0x04, this::restoreHash);
+            0x00, buffer -> readString(buffer, MAX_VALUE_LENGTH, "string value"),
+            0x01, this::readList,
+            0x02, this::readSet,
+            0x04, this::readHash);
 
     public void load(DataStore dataStore, String filePath) throws IOException {
         File file = new File(filePath);
@@ -38,165 +48,190 @@ public class RDBReader {
             logger.info("RDB file {} does not exist, skipping", filePath);
             return;
         }
+        long fileSize = file.length();
+        // 映射文件前先限制整体大小，避免异常文件占用过多虚拟内存和堆内存。
+        if (fileSize <= 0 || fileSize > MAX_RDB_SIZE) {
+            throw new IOException("Invalid RDB file size: " + fileSize);
+        }
 
         logger.info("Loading RDB file from {}", filePath);
-
+        List<LoadedEntry> entries;
         try (FileChannel channel = FileChannel.open(file.toPath(), StandardOpenOption.READ)) {
-            MappedByteBuffer buffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, file.length());
-
-            byte[] header = new byte[9];
-            buffer.get(header);
-            String headerStr = new String(header, 0, 9);
-            if (!headerStr.startsWith("REDIS")) {
-                logger.warn("Invalid RDB file header: {}", headerStr);
-                return;
-            }
-
-            buffer.getInt(); // skip version
-            int loaded;
-            try {
-                loaded = readDatabase(buffer, dataStore);
-            } catch (BufferUnderflowException e) {
-                logger.warn("RDB file is truncated or corrupted", e);
-                loaded = -1;
-            }
-            lastSaveTimestamp = file.lastModified() / 1000;
-            logger.info("RDB file loaded successfully: {} keys restored", loaded);
+            // 只读内存映射适合顺序解析，避免对每个字段执行独立的文件读取调用。
+            MappedByteBuffer buffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize);
+            // parse 阶段不修改 DataStore，只有整个文件校验成功后才会进入 apply 阶段。
+            entries = parse(buffer);
+        } catch (RuntimeException e) {
+            throw new IOException("RDB file is truncated or corrupted", e);
         }
+
+        // 文件结构完整后统一恢复，防止截断文件造成半恢复状态。
+        int loaded = apply(entries, dataStore);
+        lastSaveTimestamp = file.lastModified() / 1000;
+        logger.info("RDB file loaded successfully: {} keys restored", loaded);
     }
 
-    /**
-     * 从 MappedByteBuffer 解析数据库条目
-     */
-    private int readDatabase(MappedByteBuffer buffer, DataStore dataStore) {
-        int count = 0;
+    private List<LoadedEntry> parse(ByteBuffer buffer) throws IOException {
+        // 魔数和版本必须精确匹配，避免用错误格式解释后续字节。
+        requireRemaining(buffer, RDB_HEADER.length + Integer.BYTES, "header");
+        byte[] header = new byte[RDB_HEADER.length];
+        buffer.get(header);
+        if (!Arrays.equals(header, RDB_HEADER)) throw new IOException("Invalid RDB file header");
+        int version = buffer.getInt();
+        if (version != 9) throw new IOException("Unsupported RDB format version: " + version);
 
+        List<LoadedEntry> entries = new ArrayList<>();
+        boolean footerSeen = false;
         while (buffer.hasRemaining()) {
-            int b = buffer.get() & 0xFF;
-
-            if (b == 0xFF) {
-                buffer.getInt(); // skip checksum
+            int marker = readUnsignedByte(buffer, "entry marker");
+            if (marker == 0xFF) {
+                // Footer 后不允许存在额外字节，确保文件边界明确且没有拼接脏数据。
+                requireRemaining(buffer, Integer.BYTES, "footer");
+                if (buffer.getInt() != 0) throw new IOException("Unsupported RDB checksum");
+                if (buffer.hasRemaining()) throw new IOException("Trailing bytes after RDB footer");
+                footerSeen = true;
                 break;
             }
-            if (b == 0xFE) {
-                buffer.getInt(); // skip DB number
+            if (marker == 0xFE) {
+                // 0xFE 后跟数据库编号；当前仅使用 DB 0，但仍消费该字段以保持格式可扩展。
+                requireRemaining(buffer, Integer.BYTES, "database number");
+                buffer.getInt();
                 continue;
             }
-            if (b != 0xC0) {
-                continue; // skip unknown bytes
-            }
+            if (marker != 0xC0) throw new IOException("Unknown RDB entry marker: 0x" + Integer.toHexString(marker));
 
-            // === Read entry ===
-            int keyLen = buffer.getInt();
-            if (keyLen <= 0 || keyLen > MAX_KEY_LENGTH) continue;
-
-            byte[] keyBytes = new byte[keyLen];
-            buffer.get(keyBytes);
-            String key = new String(keyBytes, StandardCharsets.UTF_8);
-
-            // Read expire flag
-            int hasExpire = buffer.get() & 0xFF;
-
-            long expireAt = -1;
-            if (hasExpire == 0x01) {
-                expireAt = buffer.getLong();
-            }
-
-            // Read type AFTER optional expireAt (8 bytes consumed above)
-            int type = buffer.get() & 0xFF;
-
-            ValueReader codec = codecs.get(type);
-            if (codec == null) {
-                logger.warn("Unknown type 0x{} for key '{}'", Integer.toHexString(type), key);
-            } else {
-                count += codec.read(buffer, dataStore, key, expireAt);
-            }
+            String key = readString(buffer, MAX_KEY_LENGTH, "key");
+            if (key == null) throw new IOException("RDB key cannot be null");
+            int expireFlag = readUnsignedByte(buffer, "expiry flag");
+            if (expireFlag != 0 && expireFlag != 1) throw new IOException("Invalid expiry flag: " + expireFlag);
+            long expireAt = expireFlag == 1 ? readLong(buffer, "expiry timestamp") : -1;
+            int typeCode = readUnsignedByte(buffer, "value type");
+            ValueReader reader = codecs.get(typeCode);
+            if (reader == null) throw new IOException("Unknown RDB value type: 0x" + Integer.toHexString(typeCode));
+            Object value = reader.read(buffer);
+            // 此处只保存解析结果，不立即调用 DataStore。
+            entries.add(new LoadedEntry(key, type(typeCode), value, expireAt));
         }
+        if (!footerSeen) throw new IOException("RDB footer is missing");
+        return entries;
+    }
 
+    private int apply(List<LoadedEntry> entries, DataStore store) {
+        int count = 0;
+        for (LoadedEntry entry : entries) {
+            // 从保存到恢复之间可能已经过期，因此恢复前需要根据当前时间再次判断。
+            long remaining = entry.expireAt() > 0 ? entry.expireAt() - System.currentTimeMillis() : -1;
+            if (entry.expireAt() > 0 && remaining <= 0) continue;
+            switch (entry.type()) {
+                case STRING -> store.set(entry.key(), (String) entry.value());
+                case LIST -> store.rPush(entry.key(), ((List<String>) entry.value()).toArray(new String[0]));
+                case SET -> store.sAdd(entry.key(), ((Set<String>) entry.value()).toArray(new String[0]));
+                case HASH -> store.hMSet(entry.key(), (Map<String, String>) entry.value());
+                default -> throw new IllegalStateException("Unsupported snapshot type: " + entry.type());
+            }
+            // 使用毫秒精度恢复 TTL，避免转换为秒时丢失不足一秒的有效期。
+            if (remaining > 0) store.expireMs(entry.key(), remaining);
+            count++;
+        }
         return count;
     }
 
-    private int restoreString(MappedByteBuffer buffer, DataStore dataStore, String key, long expireAt) {
-        String value = readString(buffer);
-        if (value == null) return 0;
+    private List<String> readList(ByteBuffer buffer) throws IOException {
+        int count = readCount(buffer, "list");
+        List<String> values = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) values.add(requireValue(readString(buffer, MAX_VALUE_LENGTH, "list value")));
+        return values;
+    }
 
-        if (expireAt > 0) {
-            long seconds = (expireAt - System.currentTimeMillis()) / 1000;
-            if (seconds > 0) {
-                dataStore.setEx(key, value, seconds);
-            } else {
-                dataStore.set(key, value);
-            }
-        } else {
-            dataStore.set(key, value);
+    private Set<String> readSet(ByteBuffer buffer) throws IOException {
+        int count = readCount(buffer, "set");
+        Set<String> values = new LinkedHashSet<>(capacity(count));
+        for (int i = 0; i < count; i++) values.add(requireValue(readString(buffer, MAX_VALUE_LENGTH, "set member")));
+        return values;
+    }
+
+    private Map<String, String> readHash(ByteBuffer buffer) throws IOException {
+        int count = readCount(buffer, "hash");
+        Map<String, String> values = new LinkedHashMap<>(capacity(count));
+        for (int i = 0; i < count; i++) {
+            String field = requireValue(readString(buffer, MAX_VALUE_LENGTH, "hash field"));
+            String value = requireValue(readString(buffer, MAX_VALUE_LENGTH, "hash value"));
+            values.put(field, value);
         }
-        return 1;
+        return values;
     }
 
-    private int restoreList(MappedByteBuffer buffer, DataStore dataStore, String key, long expireAt) {
-        int elemCount = buffer.getInt();
-        for (int i = 0; i < elemCount; i++) {
-            String v = readString(buffer);
-            if (v != null) dataStore.rPush(key, v);
-        }
-        if (expireAt > 0) setExpire(dataStore, key, expireAt);
-        return 1;
+    private int readCount(ByteBuffer buffer, String kind) throws IOException {
+        int count = readInt(buffer, kind + " element count");
+        // 同时校验数量上限和最小所需字节数，阻止超大分配及明显截断的数据。
+        if (count < 0 || count > MAX_COLLECTION_ENTRIES)
+            throw new IOException("Invalid " + kind + " element count: " + count);
+        if ((long) count * Integer.BYTES > buffer.remaining())
+            throw new IOException("Truncated " + kind + " payload");
+        return count;
     }
 
-    private int restoreSet(MappedByteBuffer buffer, DataStore dataStore, String key, long expireAt) {
-        int memberCount = buffer.getInt();
-        for (int i = 0; i < memberCount; i++) {
-            String m = readString(buffer);
-            if (m != null) dataStore.sAdd(key, m);
-        }
-        if (expireAt > 0) setExpire(dataStore, key, expireAt);
-        return 1;
+    private static String readString(ByteBuffer buffer, int maxLength, String label) throws IOException {
+        int length = readInt(buffer, label + " length");
+        if (length == -1) return null;
+        // 分配 byte[] 之前先检查长度和剩余字节，避免 OOM 或 BufferUnderflow。
+        if (length < 0 || length > maxLength) throw new IOException("Invalid " + label + " length: " + length);
+        requireRemaining(buffer, length, label);
+        byte[] bytes = new byte[length];
+        buffer.get(bytes);
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 
-    private int restoreHash(MappedByteBuffer buffer, DataStore dataStore, String key, long expireAt) {
-        int fieldCount = buffer.getInt();
-        for (int i = 0; i < fieldCount; i++) {
-            String fld = readString(buffer);
-            String fval = readString(buffer);
-            if (fld != null && fval != null) dataStore.hSet(key, fld, fval);
-        }
-        if (expireAt > 0) setExpire(dataStore, key, expireAt);
-        return 1;
+    private static String requireValue(String value) throws IOException {
+        if (value == null) throw new IOException("Collection values cannot be null");
+        return value;
     }
 
-    private void setExpire(DataStore dataStore, String key, long expireAt) {
-        long seconds = (expireAt - System.currentTimeMillis()) / 1000;
-        if (seconds > 0) {
-            dataStore.expire(key, seconds);
-        }
+    private static int readUnsignedByte(ByteBuffer buffer, String label) throws IOException {
+        requireRemaining(buffer, 1, label);
+        return buffer.get() & 0xFF;
     }
 
-    private String readString(MappedByteBuffer buffer) {
-        int len = buffer.getInt();
-        if (len < 0) return null;
-        // len == 0: 空字符串，new byte[0] 和 get 都是合法操作
-        byte[] buf = new byte[len];
-        buffer.get(buf);
-        return new String(buf, StandardCharsets.UTF_8);
+    private static int readInt(ByteBuffer buffer, String label) throws IOException {
+        requireRemaining(buffer, Integer.BYTES, label);
+        return buffer.getInt();
     }
 
-    // ==================== Public query methods ====================
-
-    public boolean exists(String filePath) {
-        return new File(filePath).exists();
+    private static long readLong(ByteBuffer buffer, String label) throws IOException {
+        requireRemaining(buffer, Long.BYTES, label);
+        return buffer.getLong();
     }
 
+    private static void requireRemaining(ByteBuffer buffer, int bytes, String label) throws IOException {
+        // 所有基础读取最终都经过该方法，统一处理截断文件的边界检查。
+        if (bytes < 0 || buffer.remaining() < bytes) throw new IOException("Truncated RDB " + label);
+    }
+
+    private static int capacity(int size) {
+        return size < 3 ? size + 1 : (int) Math.min(Integer.MAX_VALUE, size / 0.75f + 1);
+    }
+
+    private static DataType type(int typeCode) throws IOException {
+        return switch (typeCode) {
+            case 0x00 -> DataType.STRING;
+            case 0x01 -> DataType.LIST;
+            case 0x02 -> DataType.SET;
+            case 0x04 -> DataType.HASH;
+            default -> throw new IOException("Unknown RDB value type");
+        };
+    }
+
+    public boolean exists(String filePath) { return new File(filePath).exists(); }
     public long getLastModified(String filePath) {
         File file = new File(filePath);
         return file.exists() ? file.lastModified() / 1000 : 0;
     }
+    public long getLastSaveTimestamp() { return lastSaveTimestamp; }
 
-    public long getLastSaveTimestamp() {
-        return lastSaveTimestamp;
-    }
+    private record LoadedEntry(String key, DataType type, Object value, long expireAt) {}
 
     @FunctionalInterface
     private interface ValueReader {
-        int read(MappedByteBuffer buffer, DataStore dataStore, String key, long expireAt);
+        Object read(ByteBuffer buffer) throws IOException;
     }
 }

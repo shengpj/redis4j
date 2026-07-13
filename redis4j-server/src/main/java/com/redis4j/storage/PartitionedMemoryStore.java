@@ -9,6 +9,8 @@ import com.redis4j.storage.repository.EntryRepository;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 分区内存数据存储实现
@@ -65,7 +67,9 @@ public class PartitionedMemoryStore implements DataStore {
 
     @Override
     public void set(String key, String value) {
-        getPartition(key).store.put(key, new Entry(new RedisString(value)));
+        Partition p = getPartition(key);
+        p.store.put(key, new Entry(new RedisString(value)));
+        p.expiryIndex.remove(key);
     }
 
     @Override
@@ -80,10 +84,18 @@ public class PartitionedMemoryStore implements DataStore {
     @Override
     public boolean setNx(String key, String value) {
         Partition p = getPartition(key);
-        RedisString redisValue = new RedisString(value);
-        Entry entry = new Entry(redisValue);
-        Entry existing = p.store.putIfAbsent(key, entry);
-        return existing == null;
+        AtomicBoolean inserted = new AtomicBoolean();
+        p.store.compute(key, (k, existing) -> {
+            if (existing == null || existing.isExpired()) {
+                inserted.set(true);
+                return new Entry(new RedisString(value));
+            }
+            return existing;
+        });
+        if (inserted.get()) {
+            p.expiryIndex.remove(key);
+        }
+        return inserted.get();
     }
 
     @Override
@@ -138,7 +150,7 @@ public class PartitionedMemoryStore implements DataStore {
             throw new IllegalStateException("Value is not a string");
         });
         updateExpiryIndex(p, key, entry);
-        return Long.parseLong(((RedisString) p.store.get(key).getValue()).getStringValue());
+        return Long.parseLong(((RedisString) entry.getValue()).getStringValue());
     }
 
     @Override
@@ -174,7 +186,7 @@ public class PartitionedMemoryStore implements DataStore {
             throw new IllegalStateException("Value is not a string");
         });
         updateExpiryIndex(p, key, entry);
-        RedisString rv = (RedisString) p.store.get(key).getValue();
+        RedisString rv = (RedisString) entry.getValue();
         return rv.getStringValue().length();
     }
 
@@ -224,19 +236,21 @@ public class PartitionedMemoryStore implements DataStore {
     @Override
     public boolean expireMs(String key, long milliseconds) {
         Partition p = getPartition(key);
-        Entry entry = p.store.get(key);
-        if (entry == null || entry.isExpired()) {
-            return false;
-        }
         long expireAt = System.currentTimeMillis() + milliseconds;
-        p.store.put(key, new Entry(entry.getValue(), expireAt));
-        p.expiryIndex.put(key, expireAt);
-        return true;
+        AtomicBoolean updated = new AtomicBoolean();
+        p.store.compute(key, (k, entry) -> {
+            if (entry == null || entry.isExpired()) return null;
+            updated.set(true);
+            return new Entry(entry.getValue(), expireAt);
+        });
+        if (updated.get()) p.expiryIndex.put(key, expireAt);
+        return updated.get();
     }
 
     @Override
     public long ttl(String key) {
-        return pttl(key) / 1000;
+        long result = pttl(key);
+        return result >= 0 ? result / 1000 : result;
     }
 
     @Override
@@ -253,7 +267,7 @@ public class PartitionedMemoryStore implements DataStore {
         }
         long remaining = entry.getExpireAt() - System.currentTimeMillis();
         if (remaining <= 0) {
-            p.store.remove(key);
+            p.store.remove(key, entry);
             p.expiryIndex.remove(key);
             return -2;
         }
@@ -263,45 +277,34 @@ public class PartitionedMemoryStore implements DataStore {
     @Override
     public boolean persist(String key) {
         Partition p = getPartition(key);
-        Entry entry = p.store.get(key);
-        if (entry == null || entry.isExpired()) {
-            return false;
-        }
-        if (!entry.isPersistent()) {
-            p.store.put(key, new Entry(entry.getValue()));
-            p.expiryIndex.remove(key);
-        }
-        return true;
+        AtomicBoolean found = new AtomicBoolean();
+        p.store.compute(key, (k, entry) -> {
+            if (entry == null || entry.isExpired()) return null;
+            found.set(true);
+            return entry.isPersistent() ? entry : new Entry(entry.getValue());
+        });
+        if (found.get()) p.expiryIndex.remove(key);
+        return found.get();
     }
 
     @Override
     public void rename(String key, String newKey) {
         if (key.equals(newKey)) return;
-
-        Partition p1 = getPartition(key);
-        Partition p2 = getPartition(newKey);
-
-        p1.store.compute(key, (k, entry) -> {
-            if (entry == null) {
-                return null;
+        int sourceIndex = getPartitionIndex(key);
+        int destinationIndex = getPartitionIndex(newKey);
+        Partition source = partitions[sourceIndex];
+        Partition destination = partitions[destinationIndex];
+        withPartitionLocks(sourceIndex, destinationIndex, () -> {
+            Entry entry = source.store.get(key);
+            if (entry == null || entry.isExpired()) {
+                if (entry != null) source.store.remove(key, entry);
+                source.expiryIndex.remove(key);
+                return;
             }
-            // 同分区：直接移动
-            if (p1 == p2) {
-                p1.store.put(newKey, entry);
-                p1.expiryIndex.remove(k);
-                if (!entry.isPersistent()) {
-                    p1.expiryIndex.put(newKey, entry.getExpireAt());
-                }
-                return null;
-            }
-            // 跨分区：先放目标，再删除源
-            p2.store.put(newKey, entry);
-            if (entry.isPersistent()) {
-                p2.expiryIndex.put(newKey, -1L);
-            } else {
-                p2.expiryIndex.put(newKey, entry.getExpireAt());
-            }
-            return null;
+            destination.store.put(newKey, entry);
+            source.store.remove(key, entry);
+            source.expiryIndex.remove(key);
+            updateExpiryIndex(destination, newKey, entry);
         });
     }
 
@@ -435,9 +438,9 @@ public class PartitionedMemoryStore implements DataStore {
     @Override
     public long hSet(String key, String field, String value) {
         return modifyHash(key, hash -> {
-            long existed = hash.containsKey(field) ? 1 : 0;
+            long added = hash.containsKey(field) ? 0 : 1;
             hash.put(field, value);
-            return existed;
+            return added;
         });
     }
 
@@ -662,44 +665,45 @@ public class PartitionedMemoryStore implements DataStore {
 
     @Override
     public boolean sMove(String srcKey, String destKey, String member) {
-        Partition srcP = getPartition(srcKey);
-        Partition destP = getPartition(destKey);
+        int sourceIndex = getPartitionIndex(srcKey);
+        int destinationIndex = getPartitionIndex(destKey);
+        Partition source = partitions[sourceIndex];
+        Partition destination = partitions[destinationIndex];
+        AtomicBoolean moved = new AtomicBoolean();
+        withPartitionLocks(sourceIndex, destinationIndex, () -> {
+            Entry sourceEntry = source.store.get(srcKey);
+            if (sourceEntry == null || sourceEntry.isExpired()
+                    || !(sourceEntry.getValue() instanceof RedisSet sourceSet)
+                    || !sourceSet.contains(member)) return;
+            if (srcKey.equals(destKey)) {
+                moved.set(true);
+                return;
+            }
+            Entry destinationEntry = destination.store.get(destKey);
+            if (destinationEntry != null && destinationEntry.isExpired()) destinationEntry = null;
+            if (destinationEntry != null && !(destinationEntry.getValue() instanceof RedisSet)) return;
 
-        final boolean[] result = {false};
-        srcP.store.computeIfPresent(srcKey, (k, entry) -> {
-            if (entry == null || entry.isExpired() || !(entry.getValue() instanceof RedisSet srcSet)) {
-                return entry;
-            }
-            if (!srcSet.contains(member)) {
-                return entry;
-            }
+            RedisSet newDestination = destinationEntry == null
+                    ? new RedisSet() : new RedisSet(((RedisSet) destinationEntry.getValue()).getSet());
+            newDestination.add(member);
+            Entry newDestinationEntry = new Entry(newDestination,
+                    destinationEntry == null ? -1 : destinationEntry.getExpireAt());
+            destination.store.put(destKey, newDestinationEntry);
+            updateExpiryIndex(destination, destKey, newDestinationEntry);
 
-            // 在返回新 entry 之前，先向目标写入 member
-            Entry destEntry = destP.store.get(destKey);
-            if (destEntry != null && destEntry.isExpired()) {
-                destEntry = null;
-            }
-            RedisSet destSet;
-            if (destEntry == null) {
-                destSet = new RedisSet();
-                destP.store.put(destKey, new Entry(destSet, -1));
-            } else if (destEntry.getValue() instanceof RedisSet s) {
-                destSet = new RedisSet(s.getSet());
+            RedisSet newSource = new RedisSet(sourceSet.getSet());
+            newSource.remove(member);
+            if (newSource.isEmpty()) {
+                source.store.remove(srcKey, sourceEntry);
+                source.expiryIndex.remove(srcKey);
             } else {
-                return entry; // 类型不匹配，不做任何修改
+                Entry newSourceEntry = new Entry(newSource, sourceEntry.getExpireAt());
+                source.store.put(srcKey, newSourceEntry);
+                updateExpiryIndex(source, srcKey, newSourceEntry);
             }
-            destSet.add(member);
-
-            result[0] = true;
-            // 从源创建去重的新集合
-            Set<String> newSrc = new HashSet<>(srcSet.getSet());
-            newSrc.remove(member);
-            if (newSrc.isEmpty()) {
-                return null; // 集合为空，删除源 key
-            }
-            return new Entry(new RedisSet(newSrc), entry.getExpireAt());
+            moved.set(true);
         });
-        return result[0];
+        return moved.get();
     }
 
     @Override
@@ -787,8 +791,12 @@ public class PartitionedMemoryStore implements DataStore {
                 if (expireAt != null && expireAt < now) {
                     String key = entry.getKey();
                     // CAS 删除：只有过期时间未变时才清理，避免误删刚刷新过期时间的 key
-                    if (p.expiryIndex.remove(key, expireAt)) {
-                        p.store.remove(key);
+                    Entry current = p.store.get(key);
+                    if (current != null && current.getExpireAt() == expireAt && current.isExpired()
+                            && p.store.remove(key, current)) {
+                        p.expiryIndex.remove(key, expireAt);
+                    } else if (current == null || current.getExpireAt() != expireAt) {
+                        p.expiryIndex.remove(key, expireAt);
                     }
                 }
             }
@@ -796,107 +804,73 @@ public class PartitionedMemoryStore implements DataStore {
     }
 
     private void updateExpiryIndex(Partition partition, String key, Entry entry) {
-        if (entry.isPersistent()) {
+        if (entry == null || entry.isPersistent()) {
             partition.expiryIndex.remove(key);
         } else {
             partition.expiryIndex.put(key, entry.getExpireAt());
         }
     }
 
+    private void withPartitionLocks(int firstIndex, int secondIndex, Runnable action) {
+        int low = Math.min(firstIndex, secondIndex);
+        int high = Math.max(firstIndex, secondIndex);
+        synchronized (partitions[low].store) {
+            if (low == high) {
+                action.run();
+            } else {
+                synchronized (partitions[high].store) {
+                    action.run();
+                }
+            }
+        }
+    }
+
     private <T> T modifyList(String key, java.util.function.Function<RedisList, T> operation) {
         Partition p = getPartition(key);
-        while (true) {
-            Entry entry = p.store.get(key);
-            if (entry == null || entry.isExpired()) {
-                RedisList list = new RedisList();
-                Entry newEntry = new Entry(list);
-                if (p.store.putIfAbsent(key, newEntry) == null) {
-                    T result = operation.apply(list);
-                    if (list.isEmpty()) {
-                        p.store.remove(key);
-                    }
-                    return result;
-                }
-                continue;
-            }
-
-            if (!(entry.getValue() instanceof RedisList)) {
+        AtomicReference<T> result = new AtomicReference<>();
+        Entry updated = p.store.compute(key, (k, entry) -> {
+            long expireAt = entry == null || entry.isExpired() ? -1 : entry.getExpireAt();
+            if (entry != null && !entry.isExpired() && !(entry.getValue() instanceof RedisList))
                 throw new IllegalStateException("Value is not a list");
-            }
-
-            RedisList list = (RedisList) entry.getValue();
-            T result = operation.apply(list);
-
-            if (list.isEmpty()) {
-                p.store.remove(key);
-            }
-
-            return result;
-        }
+            RedisList list = entry == null || entry.isExpired()
+                    ? new RedisList() : new RedisList(((RedisList) entry.getValue()).getList());
+            result.set(operation.apply(list));
+            return list.isEmpty() ? null : new Entry(list, expireAt);
+        });
+        updateExpiryIndex(p, key, updated);
+        return result.get();
     }
 
     private <T> T modifyHash(String key, java.util.function.Function<RedisHash, T> operation) {
         Partition p = getPartition(key);
-        while (true) {
-            Entry entry = p.store.get(key);
-            if (entry == null || entry.isExpired()) {
-                RedisHash hash = new RedisHash();
-                Entry newEntry = new Entry(hash);
-                if (p.store.putIfAbsent(key, newEntry) == null) {
-                    T result = operation.apply(hash);
-                    if (hash.isEmpty()) {
-                        p.store.remove(key);
-                    }
-                    return result;
-                }
-                continue;
-            }
-
-            if (!(entry.getValue() instanceof RedisHash)) {
+        AtomicReference<T> result = new AtomicReference<>();
+        Entry updated = p.store.compute(key, (k, entry) -> {
+            long expireAt = entry == null || entry.isExpired() ? -1 : entry.getExpireAt();
+            if (entry != null && !entry.isExpired() && !(entry.getValue() instanceof RedisHash))
                 throw new IllegalStateException("Value is not a hash");
-            }
-
-            RedisHash hash = (RedisHash) entry.getValue();
-            T result = operation.apply(hash);
-
-            if (hash.isEmpty()) {
-                p.store.remove(key);
-            }
-
-            return result;
-        }
+            RedisHash hash = entry == null || entry.isExpired()
+                    ? new RedisHash() : new RedisHash(((RedisHash) entry.getValue()).getHash());
+            result.set(operation.apply(hash));
+            return hash.isEmpty() ? null : new Entry(hash, expireAt);
+        });
+        updateExpiryIndex(p, key, updated);
+        return result.get();
     }
 
     private <T> T modifySet(String key, java.util.function.Function<RedisSet, T> operation) {
         Partition p = getPartition(key);
-        while (true) {
-            Entry entry = p.store.get(key);
-            if (entry == null || entry.isExpired()) {
-                RedisSet set = new RedisSet();
-                Entry newEntry = new Entry(set);
-                if (p.store.putIfAbsent(key, newEntry) == null) {
-                    T result = operation.apply(set);
-                    if (set.isEmpty()) {
-                        p.store.remove(key);
-                    }
-                    return result;
-                }
-                continue;
-            }
-
-            if (!(entry.getValue() instanceof RedisSet)) {
+        AtomicReference<T> result = new AtomicReference<>();
+        Entry updated = p.store.compute(key, (k, entry) -> {
+            long expireAt = entry == null || entry.isExpired() ? -1 : entry.getExpireAt();
+            if (entry != null && !entry.isExpired() && !(entry.getValue() instanceof RedisSet))
                 throw new IllegalStateException("Value is not a set");
-            }
-
-            RedisSet set = (RedisSet) entry.getValue();
-            T result = operation.apply(set);
-
-            if (set.isEmpty()) {
-                p.store.remove(key);
-            }
-
-            return result;
-        }
+            RedisSet set = entry == null || entry.isExpired()
+                    ? new RedisSet() : new RedisSet(((RedisSet) entry.getValue()).getSet());
+            result.set(operation.apply(set));
+            return set.isEmpty() ? null : new Entry(set, expireAt);
+        });
+        updateExpiryIndex(p, key, updated);
+        return result.get();
     }
 
     private String patternToRegex(String pattern) {

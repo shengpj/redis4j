@@ -33,11 +33,21 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
     private final Deque<ParsedCommand> pendingCommands = new ArrayDeque<>();
     private boolean commandRunning;
 
-    private static final int MAX_PENDING_COMMANDS_PER_CONNECTION = 1024;
+    private static final int DEFAULT_MAX_PENDING_COMMANDS_PER_CONNECTION = 1024;
+    private final int maxPendingCommandsPerConnection;
 
     public NettyCodecHandler(CommandRegistry commandRegistry, ThreadPoolExecutor commandExecutor) {
+        this(commandRegistry, commandExecutor, DEFAULT_MAX_PENDING_COMMANDS_PER_CONNECTION);
+    }
+
+    public NettyCodecHandler(CommandRegistry commandRegistry, ThreadPoolExecutor commandExecutor,
+                             int maxPendingCommandsPerConnection) {
+        if (maxPendingCommandsPerConnection <= 0) {
+            throw new IllegalArgumentException("maxPendingCommandsPerConnection must be positive");
+        }
         this.commandRegistry = commandRegistry;
         this.commandExecutor = commandExecutor;
+        this.maxPendingCommandsPerConnection = maxPendingCommandsPerConnection;
     }
 
     private volatile boolean heartbeatPending;
@@ -69,7 +79,7 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
         logger.debug("Executing command: {} {}", parsed.name(), List.of(parsed.args()));
 
         // 写回操作切回 EventLoop 线程，避免 Netty 内部跨线程调度
-        if (pendingCommands.size() >= MAX_PENDING_COMMANDS_PER_CONNECTION) {
+        if (pendingCommands.size() >= maxPendingCommandsPerConnection) {
             logger.warn("Too many pending commands, closing: {}", ctx.channel().remoteAddress());
             ctx.close();
             return;

@@ -83,7 +83,7 @@ public class RedisServer {
                 config.getWorkerThreads(),
                 config.getWorkerThreads(),
                 0L, TimeUnit.MILLISECONDS,
-                new java.util.concurrent.LinkedBlockingQueue<>(1024),
+                new java.util.concurrent.LinkedBlockingQueue<>(config.getCommandQueueCapacity()),
                 r -> {
                     Thread t = new Thread(r, "redis-cmd-" + threadNum.getAndIncrement());
                     t.setDaemon(true);
@@ -114,12 +114,14 @@ public class RedisServer {
                         pipeline.addLast(new IdleStateHandler(30, 0, 0, TimeUnit.SECONDS));
 
                         // 使用 Netty codec-redis
-                        pipeline.addLast(new RedisDecoder());
+                        pipeline.addLast(new RedisDecoder(config.getMaxFrameLength(), FixedRedisMessagePool.INSTANCE));
+                        pipeline.addLast(new RedisMessageSizeLimiter(config.getMaxFrameLength()));
                         pipeline.addLast(new RedisBulkStringAggregator());
-                        pipeline.addLast(new RedisMessageAggregator());
+                        pipeline.addLast(new RedisMessageAggregator(config.getMaxArrayLength()));
                         pipeline.addLast(new RedisEncoder());
                         pipeline.addLast(new FlushConsolidationHandler(256, true));
-                        pipeline.addLast(new NettyCodecHandler(commandRegistry, commandExecutor));
+                        pipeline.addLast(new NettyCodecHandler(commandRegistry, commandExecutor,
+                                config.getMaxPendingCommandsPerConnection()));
                     }
                 });
 

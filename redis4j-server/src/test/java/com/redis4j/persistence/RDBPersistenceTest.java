@@ -2,11 +2,15 @@ package com.redis4j.persistence;
 
 import com.redis4j.storage.DataStore;
 import com.redis4j.storage.MemoryStore;
+import com.redis4j.storage.DataType;
+import com.redis4j.storage.snapshot.DataSnapshot;
+import com.redis4j.storage.snapshot.SnapshotEntry;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.*;
 import java.nio.file.*;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -137,5 +141,63 @@ class RDBPersistenceTest {
         reader.load(loaded, tempDir.resolve("nonexistent.rdb").toString());
         assertEquals(0, loaded.dbSize());
         loaded.close();
+    }
+
+    @Test
+    void expiredEntriesAreNotResurrected() throws Exception {
+        store.set("string", "value");
+        store.rPush("list", "value");
+        store.expireMs("string", 200);
+        store.expireMs("list", 200);
+        Path rdbFile = tempDir.resolve("expired.rdb");
+        writer.save(store, rdbFile.toString());
+        Thread.sleep(250);
+
+        try (DataStore loaded = new MemoryStore()) {
+            reader.load(loaded, rdbFile.toString());
+            assertFalse(loaded.exists("string"));
+            assertFalse(loaded.exists("list"));
+        }
+    }
+
+    @Test
+    void corruptedFileDoesNotPartiallyMutateStore() throws Exception {
+        Path rdbFile = tempDir.resolve("corrupted.rdb");
+        Files.write(rdbFile, "REDIS0011".getBytes());
+        try (DataStore loaded = new MemoryStore()) {
+            loaded.set("existing", "safe");
+            assertThrows(IOException.class, () -> reader.load(loaded, rdbFile.toString()));
+            assertEquals("safe", loaded.get("existing"));
+            assertEquals(1, loaded.dbSize());
+        }
+    }
+
+    @Test
+    void failedSaveKeepsPreviousSnapshot() throws Exception {
+        Path rdbFile = tempDir.resolve("atomic.rdb");
+        store.set("stable", "value");
+        writer.save(store, rdbFile.toString());
+
+        DataSnapshot invalid = new DataSnapshot(List.of(
+                new SnapshotEntry("broken", DataType.STRING, 123, -1)));
+        assertThrows(ClassCastException.class, () -> writer.save(() -> invalid, rdbFile.toString()));
+
+        try (DataStore loaded = new MemoryStore()) {
+            reader.load(loaded, rdbFile.toString());
+            assertEquals("value", loaded.get("stable"));
+            assertFalse(loaded.exists("broken"));
+        }
+    }
+
+    @Test
+    void writesEntryThatEndsExactlyAtBufferBoundary() throws Exception {
+        String key = "k".repeat(65_513);
+        store.set(key, "value");
+        Path rdbFile = tempDir.resolve("boundary.rdb");
+        writer.save(store, rdbFile.toString());
+        try (DataStore loaded = new MemoryStore()) {
+            reader.load(loaded, rdbFile.toString());
+            assertEquals("value", loaded.get(key));
+        }
     }
 }
