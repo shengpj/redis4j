@@ -262,6 +262,65 @@ public class RedisClientDemo {
                 yield formatScan(commands.sScan(args[0], args[1],
                         java.util.Arrays.copyOfRange(args, 2, args.length)));
             }
+            case "ZADD" -> {
+                if (args.length < 3 || args.length % 2 == 0)
+                    throw new IllegalArgumentException("wrong number of arguments");
+                java.util.Map<String, Double> members = new java.util.LinkedHashMap<>();
+                for (int i = 1; i < args.length; i += 2) {
+                    members.put(args[i + 1], Double.parseDouble(args[i]));
+                }
+                yield String.valueOf(commands.zAdd(args[0], members));
+            }
+            case "ZREM" -> String.valueOf(commands.zRem(args[0],
+                    java.util.Arrays.copyOfRange(args, 1, args.length)));
+            case "ZSCORE" -> {
+                Double score = commands.zScore(args[0], args[1]);
+                yield score == null ? "(nil)" : String.valueOf(score);
+            }
+            case "ZCARD" -> String.valueOf(commands.zCard(args[0]));
+            case "ZINCRBY" -> String.valueOf(commands.zIncrBy(args[0], Double.parseDouble(args[1]), args[2]));
+            case "ZRANGE" -> {
+                boolean withScores = args.length == 4 && "WITHSCORES".equalsIgnoreCase(args[3]);
+                if (args.length > 4 || args.length == 4 && !withScores)
+                    throw new IllegalArgumentException("syntax error");
+                if (withScores) {
+                    var values = commands.zRangeWithScores(args[0], Long.parseLong(args[1]), Long.parseLong(args[2]));
+                    yield formatValues(values.stream()
+                            .flatMap(value -> java.util.stream.Stream.of(value.member(), String.valueOf(value.score())))
+                            .toArray(String[]::new));
+                }
+                yield formatValues(commands.zRange(args[0], Long.parseLong(args[1]), Long.parseLong(args[2]))
+                        .toArray(String[]::new));
+            }
+            case "ZREVRANGE" -> {
+                boolean withScores = args.length == 4 && "WITHSCORES".equalsIgnoreCase(args[3]);
+                if (args.length > 4 || args.length == 4 && !withScores)
+                    throw new IllegalArgumentException("syntax error");
+                if (withScores) {
+                    var values = commands.zRevRangeWithScores(args[0], Long.parseLong(args[1]), Long.parseLong(args[2]));
+                    yield formatValues(values.stream()
+                            .flatMap(value -> java.util.stream.Stream.of(value.member(), String.valueOf(value.score())))
+                            .toArray(String[]::new));
+                }
+                yield formatValues(commands.zRevRange(args[0], Long.parseLong(args[1]), Long.parseLong(args[2]))
+                        .toArray(String[]::new));
+            }
+            case "ZRANK" -> {
+                Long rank = commands.zRank(args[0], args[1]);
+                yield rank == null ? "(nil)" : String.valueOf(rank);
+            }
+            case "ZREVRANK" -> {
+                Long rank = commands.zRevRank(args[0], args[1]);
+                yield rank == null ? "(nil)" : String.valueOf(rank);
+            }
+            case "ZCOUNT" -> String.valueOf(commands.zCount(args[0], args[1], args[2]));
+            case "ZRANGEBYSCORE" -> formatValues(commands.zRangeByScore(args[0], args[1], args[2],
+                    java.util.Arrays.copyOfRange(args, 3, args.length)));
+            case "ZSCAN" -> {
+                if (args.length < 2) throw new IllegalArgumentException("wrong number of arguments");
+                yield formatScan(commands.zScan(args[0], args[1],
+                        java.util.Arrays.copyOfRange(args, 2, args.length)));
+            }
             case "TYPE" -> {
                 String type = commands.type(args[0]);
                 yield type != null ? type : "none";
@@ -343,6 +402,16 @@ public class RedisClientDemo {
         return output.toString();
     }
 
+    private static String formatValues(String[] values) {
+        if (values.length == 0) return "(empty array)";
+        StringBuilder output = new StringBuilder();
+        for (int i = 0; i < values.length; i++) {
+            if (i > 0) output.append('\n');
+            output.append(i + 1).append(") \"").append(values[i]).append('"');
+        }
+        return output.toString();
+    }
+
     private static void printHelp() {
         System.out.println("""
             Supported commands:
@@ -351,6 +420,7 @@ public class RedisClientDemo {
               List:    LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN
               Hash:    HSET, HSETNX, HGET, HGETALL, HDEL, HEXISTS, HLEN, HSCAN
               Set:     SADD, SREM, SMEMBERS, SISMEMBER, SCARD, SSCAN
+              ZSet:    ZADD, ZREM, ZSCORE, ZCARD, ZINCRBY, ZRANGE, ZREVRANGE, ZRANK, ZREVRANK, ZCOUNT, ZRANGEBYSCORE, ZSCAN
               Server:  SELECT, ECHO, INFO MEMORY, SAVE, BGSAVE, LASTSAVE, TIME
               Other:   exit, quit, help
             """);

@@ -112,6 +112,11 @@ java -cp target/redis4j-1.0.0-SNAPSHOT.jar com.redis4j.Redis4J client -h localho
 - SINTER, SUNION, SDIFF
 - SMOVE, SPOP, SRANDMEMBER
 
+### Sorted Set Commands
+- ZADD, ZREM, ZSCORE, ZCARD, ZINCRBY
+- ZRANGE, ZREVRANGE, ZRANK, ZREVRANK
+- ZCOUNT, ZRANGEBYSCORE, ZSCAN
+
 ## Architecture
 
 ```

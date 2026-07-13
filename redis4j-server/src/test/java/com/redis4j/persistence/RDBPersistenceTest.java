@@ -120,6 +120,7 @@ class RDBPersistenceTest {
         store.rPush("list:key", "item1", "item2");
         store.hSet("hash:key", "field", "value");
         store.sAdd("set:key", "member");
+        store.zAdd("zset:key", java.util.Map.of("member", 1.5));
 
         Path rdbFile = tempDir.resolve("dump.rdb");
         writer.save(store, rdbFile.toString());
@@ -127,11 +128,12 @@ class RDBPersistenceTest {
         DataStore loaded = new MemoryStore();
         reader.load(loaded, rdbFile.toString());
 
-        assertEquals(4, loaded.dbSize());
+        assertEquals(5, loaded.dbSize());
         assertEquals("hello", loaded.get("string:key"));
         assertEquals(2, loaded.lLen("list:key"));
         assertEquals("value", loaded.hGet("hash:key", "field"));
         assertEquals(1, loaded.sCard("set:key"));
+        assertEquals(1.5, loaded.zScore("zset:key", "member"));
         loaded.close();
     }
 
@@ -141,6 +143,22 @@ class RDBPersistenceTest {
         reader.load(loaded, tempDir.resolve("nonexistent.rdb").toString());
         assertEquals(0, loaded.dbSize());
         loaded.close();
+    }
+
+    @Test
+    void testSortedSetPersistence() throws IOException {
+        store.zAdd("leaderboard", java.util.Map.of("alice", 10.25, "bob", 7.5));
+
+        Path rdbFile = tempDir.resolve("zset.rdb");
+        writer.save(store, rdbFile.toString());
+
+        try (DataStore loaded = new MemoryStore()) {
+            reader.load(loaded, rdbFile.toString());
+            assertEquals(2, loaded.zCard("leaderboard"));
+            assertEquals(10.25, loaded.zScore("leaderboard", "alice"));
+            assertEquals(List.of("bob", "alice"), loaded.zRange("leaderboard", 0, -1, false)
+                    .stream().map(com.redis4j.storage.ZSetStore.ScoredMember::member).toList());
+        }
     }
 
     @Test

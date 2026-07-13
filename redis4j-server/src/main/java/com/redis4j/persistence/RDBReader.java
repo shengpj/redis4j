@@ -42,6 +42,7 @@ public class RDBReader {
             0x00, buffer -> readString(buffer, MAX_VALUE_LENGTH, "string value"),
             0x01, this::readList,
             0x02, this::readSet,
+            0x03, this::readZSet,
             0x04, this::readHash);
 
     public void load(DataStore dataStore, String filePath) throws IOException {
@@ -154,6 +155,7 @@ public class RDBReader {
                 case STRING -> store.set(entry.key(), (String) entry.value());
                 case LIST -> store.rPush(entry.key(), ((List<String>) entry.value()).toArray(new String[0]));
                 case SET -> store.sAdd(entry.key(), ((Set<String>) entry.value()).toArray(new String[0]));
+                case ZSET -> store.zAdd(entry.key(), (Map<String, Double>) entry.value());
                 case HASH -> store.hMSet(entry.key(), (Map<String, String>) entry.value());
                 default -> throw new IllegalStateException("Unsupported snapshot type: " + entry.type());
             }
@@ -185,6 +187,19 @@ public class RDBReader {
             String field = requireValue(readString(buffer, MAX_VALUE_LENGTH, "hash field"));
             String value = requireValue(readString(buffer, MAX_VALUE_LENGTH, "hash value"));
             values.put(field, value);
+        }
+        return values;
+    }
+
+    private Map<String, Double> readZSet(ByteBuffer buffer) throws IOException {
+        int count = readCount(buffer, "sorted set");
+        Map<String, Double> values = new LinkedHashMap<>(capacity(count));
+        for (int i = 0; i < count; i++) {
+            String member = requireValue(readString(buffer, MAX_VALUE_LENGTH, "sorted set member"));
+            requireRemaining(buffer, Double.BYTES, "sorted set score");
+            double score = buffer.getDouble();
+            if (Double.isNaN(score)) throw new IOException("Invalid sorted set score");
+            values.put(member, score);
         }
         return values;
     }
@@ -244,6 +259,7 @@ public class RDBReader {
             case 0x00 -> DataType.STRING;
             case 0x01 -> DataType.LIST;
             case 0x02 -> DataType.SET;
+            case 0x03 -> DataType.ZSET;
             case 0x04 -> DataType.HASH;
             default -> throw new IOException("Unknown RDB value type");
         };

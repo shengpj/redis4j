@@ -11,7 +11,7 @@ import java.util.Set;
 
 /** Aggregate storage capability used by the server composition root. */
 public interface DataStore extends StringStore, KeyStore, ListStore, HashStore,
-        SetStore, SnapshotProvider, AutoCloseable {
+        SetStore, ZSetStore, SnapshotProvider, AutoCloseable {
 
     Set<String> getAllKeys();
 
@@ -32,6 +32,7 @@ public interface DataStore extends StringStore, KeyStore, ListStore, HashStore,
                 case LIST -> java.util.List.of(lRange(key, 0, -1));
                 case SET -> new HashSet<>(sMembers(key));
                 case HASH -> new LinkedHashMap<>(hGetAll(key));
+                case ZSET -> new LinkedHashMap<>(zGetAll(key));
                 default -> null;
             };
             if (value != null) entries.add(new SnapshotEntry(key, type, value, expireAt));

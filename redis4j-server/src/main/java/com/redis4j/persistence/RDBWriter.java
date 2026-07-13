@@ -130,6 +130,15 @@ public class RDBWriter {
             writeInt32(values.size());
             for (String value : values) writeString(value);
         });
+        result.put(DataType.ZSET, entry -> {
+            writeByte(0x03);
+            Map<String, Double> values = cast(entry.value());
+            writeInt32(values.size());
+            for (Map.Entry<String, Double> value : values.entrySet()) {
+                writeString(value.getKey());
+                writeDouble(value.getValue());
+            }
+        });
         result.put(DataType.HASH, entry -> {
             writeByte(0x04);
             Map<String, String> values = cast(entry.value());
@@ -182,6 +191,7 @@ public class RDBWriter {
 
     private void writeInt32(int value) throws IOException { ensure(4); buffer.putInt(value); }
     private void writeInt64(long value) throws IOException { ensure(8); buffer.putLong(value); }
+    private void writeDouble(double value) throws IOException { ensure(8); buffer.putDouble(value); }
     private void writeByte(int value) throws IOException { ensure(1); buffer.put((byte) value); }
 
     private void ensure(int bytes) throws IOException {

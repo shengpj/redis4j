@@ -117,6 +117,22 @@ class RedisClientTest {
         }
     }
 
+    @Test
+    void sortedSetRangeParsesMemberScorePairs() throws Exception {
+        RedisClient client = new RedisClient("127.0.0.1", port);
+        client.connect();
+        try {
+            List<RedisCommands.ScoredValue> values = new RedisCommands(client)
+                    .zRangeWithScores("board", 0, -1);
+
+            assertEquals(List.of(
+                    new RedisCommands.ScoredValue("alice", 10.5),
+                    new RedisCommands.ScoredValue("bob", 20.0)), values);
+        } finally {
+            client.disconnect();
+        }
+    }
+
     private static final class EchoHandler extends SimpleChannelInboundHandler<RedisMessage> {
         @Override
         protected void channelRead0(ChannelHandlerContext ctx, RedisMessage msg) {
@@ -131,6 +147,14 @@ class RedisClientTest {
                         RedisMessageHelper.array(
                                 RedisMessageHelper.bulkString("user:1"),
                                 RedisMessageHelper.bulkString("user:2"))));
+                return;
+            }
+            if ("ZRANGE".equalsIgnoreCase(command)) {
+                ctx.writeAndFlush(RedisMessageHelper.array(
+                        RedisMessageHelper.bulkString("alice"),
+                        RedisMessageHelper.bulkString("10.5"),
+                        RedisMessageHelper.bulkString("bob"),
+                        RedisMessageHelper.bulkString("20")));
                 return;
             }
             String value = RedisMessageHelper.extractString(request.children().get(1));

@@ -751,6 +751,87 @@ public class PartitionedMemoryStore implements DataStore, MemoryManagedStore {
         return members.toArray(new String[0]);
     }
 
+    // ==================== Sorted Set 操作 ====================
+
+    @Override
+    public long zAdd(String key, Map<String, Double> members) {
+        return modifyZSet(key, zset -> {
+            long added = 0;
+            for (Map.Entry<String, Double> member : members.entrySet()) {
+                if (zset.add(member.getKey(), member.getValue())) added++;
+            }
+            return added;
+        });
+    }
+
+    @Override
+    public long zRem(String key, String... members) {
+        return modifyZSet(key, zset -> {
+            long removed = 0;
+            for (String member : members) if (zset.remove(member)) removed++;
+            return removed;
+        });
+    }
+
+    @Override
+    public Double zScore(String key, String member) {
+        RedisSortedSet zset = getZSet(key);
+        return zset == null ? null : zset.score(member);
+    }
+
+    @Override
+    public long zCard(String key) {
+        RedisSortedSet zset = getZSet(key);
+        return zset == null ? 0 : zset.size();
+    }
+
+    @Override
+    public double zIncrBy(String key, double increment, String member) {
+        return modifyZSet(key, zset -> zset.increment(member, increment));
+    }
+
+    @Override
+    public List<ZSetStore.ScoredMember> zRange(String key, long start, long stop, boolean reverse) {
+        RedisSortedSet zset = getZSet(key);
+        return zset == null ? List.of() : zset.range(start, stop, reverse);
+    }
+
+    @Override
+    public Long zRank(String key, String member, boolean reverse) {
+        RedisSortedSet zset = getZSet(key);
+        return zset == null ? null : zset.rank(member, reverse);
+    }
+
+    @Override
+    public long zCount(String key, double min, boolean minInclusive, double max, boolean maxInclusive) {
+        RedisSortedSet zset = getZSet(key);
+        return zset == null ? 0 : zset.count(min, minInclusive, max, maxInclusive);
+    }
+
+    @Override
+    public List<ZSetStore.ScoredMember> zRangeByScore(String key, double min, boolean minInclusive,
+                                                      double max, boolean maxInclusive,
+                                                      long offset, long count) {
+        RedisSortedSet zset = getZSet(key);
+        return zset == null ? List.of()
+                : zset.rangeByScore(min, minInclusive, max, maxInclusive, offset, count);
+    }
+
+    @Override
+    public Map<String, Double> zGetAll(String key) {
+        RedisSortedSet zset = getZSet(key);
+        return zset == null ? Map.of() : zset.copyScores();
+    }
+
+    private RedisSortedSet getZSet(String key) {
+        Partition partition = getPartition(key);
+        Entry entry = partition.store.get(key);
+        if (entry == null || entry.isExpired()) return null;
+        if (!(entry.getValue() instanceof RedisSortedSet))
+            throw new IllegalStateException("Value is not a sorted set");
+        return (RedisSortedSet) entry.getValue();
+    }
+
     // ==================== 服务器操作 ====================
 
     @Override
@@ -884,6 +965,7 @@ public class PartitionedMemoryStore implements DataStore, MemoryManagedStore {
             case LIST -> List.copyOf(((RedisList) value).getList());
             case SET -> new HashSet<>(((RedisSet) value).getSet());
             case HASH -> new LinkedHashMap<>(((RedisHash) value).getHash());
+            case ZSET -> new LinkedHashMap<>(((RedisSortedSet) value).copyScores());
             default -> throw new IllegalStateException("Unsupported value type: " + value.getType());
         };
         return new SnapshotEntry(key, value.getType(), copied, entry.getExpireAt());
@@ -896,6 +978,7 @@ public class PartitionedMemoryStore implements DataStore, MemoryManagedStore {
             case LIST -> new RedisList(new ArrayDeque<>(cast(snapshot.value())));
             case SET -> new RedisSet(new HashSet<>(cast(snapshot.value())));
             case HASH -> new RedisHash(new LinkedHashMap<>(cast(snapshot.value())));
+            case ZSET -> new RedisSortedSet(new LinkedHashMap<>(cast(snapshot.value())));
             default -> throw new IllegalStateException("Unsupported value type: " + snapshot.type());
         };
         Partition partition = getPartition(snapshot.key());
@@ -913,6 +996,7 @@ public class PartitionedMemoryStore implements DataStore, MemoryManagedStore {
             case LIST -> collectionBytes(((RedisList) value).getList(), 48);
             case SET -> collectionBytes(((RedisSet) value).getSet(), 64);
             case HASH -> hashBytes(((RedisHash) value).getHash());
+            case ZSET -> zsetBytes(((RedisSortedSet) value).getScores());
             default -> 0;
         });
         return bytes;
@@ -928,6 +1012,14 @@ public class PartitionedMemoryStore implements DataStore, MemoryManagedStore {
         long bytes = 64;
         for (Map.Entry<String, String> value : values.entrySet()) {
             bytes = saturatedAdd(bytes, 80 + stringBytes(value.getKey()) + stringBytes(value.getValue()));
+        }
+        return bytes;
+    }
+
+    private static long zsetBytes(Map<String, Double> values) {
+        long bytes = 128;
+        for (String member : values.keySet()) {
+            bytes = saturatedAdd(bytes, 128 + stringBytes(member) + Double.BYTES);
         }
         return bytes;
     }
@@ -1039,6 +1131,23 @@ public class PartitionedMemoryStore implements DataStore, MemoryManagedStore {
             return set.isEmpty() ? null : new Entry(set, expireAt);
         });
         updateExpiryIndex(p, key, updated);
+        return result.get();
+    }
+
+    private <T> T modifyZSet(String key, java.util.function.Function<RedisSortedSet, T> operation) {
+        Partition partition = getPartition(key);
+        AtomicReference<T> result = new AtomicReference<>();
+        Entry updated = partition.store.compute(key, (k, entry) -> {
+            long expireAt = entry == null || entry.isExpired() ? -1 : entry.getExpireAt();
+            if (entry != null && !entry.isExpired() && !(entry.getValue() instanceof RedisSortedSet))
+                throw new IllegalStateException("Value is not a sorted set");
+            RedisSortedSet zset = entry == null || entry.isExpired()
+                    ? new RedisSortedSet()
+                    : new RedisSortedSet(((RedisSortedSet) entry.getValue()).copyScores());
+            result.set(operation.apply(zset));
+            return zset.isEmpty() ? null : new Entry(zset, expireAt);
+        });
+        updateExpiryIndex(partition, key, updated);
         return result.get();
     }
 

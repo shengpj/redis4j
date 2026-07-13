@@ -300,6 +300,86 @@ public class RedisCommands {
         return getInteger(response);
     }
 
+    // ==================== Sorted Set 操作 ====================
+
+    public long zAdd(String key, Map<String, Double> members) throws InterruptedException {
+        String[] command = new String[members.size() * 2 + 2];
+        command[0] = "ZADD";
+        command[1] = key;
+        int index = 2;
+        for (Map.Entry<String, Double> member : members.entrySet()) {
+            command[index++] = Double.toString(member.getValue());
+            command[index++] = member.getKey();
+        }
+        return getInteger(client.sendCommand(command));
+    }
+
+    public long zRem(String key, String... members) throws InterruptedException {
+        String[] command = new String[members.length + 2];
+        command[0] = "ZREM";
+        command[1] = key;
+        System.arraycopy(members, 0, command, 2, members.length);
+        return getInteger(client.sendCommand(command));
+    }
+
+    public Double zScore(String key, String member) throws InterruptedException {
+        RedisMessage response = client.sendCommand("ZSCORE", key, member);
+        String value = getString(response);
+        return value == null ? null : Double.valueOf(value);
+    }
+
+    public long zCard(String key) throws InterruptedException {
+        return getInteger(client.sendCommand("ZCARD", key));
+    }
+
+    public double zIncrBy(String key, double increment, String member) throws InterruptedException {
+        return Double.parseDouble(getString(client.sendCommand(
+                "ZINCRBY", key, Double.toString(increment), member)));
+    }
+
+    public List<String> zRange(String key, long start, long stop) throws InterruptedException {
+        return Arrays.asList(getStringArray(client.sendCommand(
+                "ZRANGE", key, Long.toString(start), Long.toString(stop))));
+    }
+
+    public List<ScoredValue> zRangeWithScores(String key, long start, long stop) throws InterruptedException {
+        return scoredValues(client.sendCommand(
+                "ZRANGE", key, Long.toString(start), Long.toString(stop), "WITHSCORES"));
+    }
+
+    public List<String> zRevRange(String key, long start, long stop) throws InterruptedException {
+        return Arrays.asList(getStringArray(client.sendCommand(
+                "ZREVRANGE", key, Long.toString(start), Long.toString(stop))));
+    }
+
+    public List<ScoredValue> zRevRangeWithScores(String key, long start, long stop) throws InterruptedException {
+        return scoredValues(client.sendCommand(
+                "ZREVRANGE", key, Long.toString(start), Long.toString(stop), "WITHSCORES"));
+    }
+
+    public Long zRank(String key, String member) throws InterruptedException {
+        return nullableInteger(client.sendCommand("ZRANK", key, member));
+    }
+
+    public Long zRevRank(String key, String member) throws InterruptedException {
+        return nullableInteger(client.sendCommand("ZREVRANK", key, member));
+    }
+
+    public long zCount(String key, String min, String max) throws InterruptedException {
+        return getInteger(client.sendCommand("ZCOUNT", key, min, max));
+    }
+
+    public String[] zRangeByScore(String key, String min, String max, String... options)
+            throws InterruptedException {
+        String[] command = new String[4 + options.length];
+        command[0] = "ZRANGEBYSCORE";
+        command[1] = key;
+        command[2] = min;
+        command[3] = max;
+        System.arraycopy(options, 0, command, 4, options.length);
+        return getStringArray(client.sendCommand(command));
+    }
+
     // ==================== 服务器命令 ====================
 
     public void save() throws InterruptedException {
@@ -330,6 +410,10 @@ public class RedisCommands {
 
     public ScanResult hScan(String key, String cursor, String... options) throws InterruptedException {
         return scanCommand("HSCAN", key, cursor, options);
+    }
+
+    public ScanResult zScan(String key, String cursor, String... options) throws InterruptedException {
+        return scanCommand("ZSCAN", key, cursor, options);
     }
 
     private ScanResult scanCommand(String commandName, String key, String cursor, String[] options)
@@ -363,10 +447,26 @@ public class RedisCommands {
         }
     }
 
+    public record ScoredValue(String member, double score) {}
+
     // ==================== 辅助方法 ====================
 
     private String getString(RedisMessage response) {
         return RedisMessageHelper.extractString(response);
+    }
+
+    private Long nullableInteger(RedisMessage response) {
+        return RedisMessageHelper.isNullBulkString(response) ? null : getInteger(response);
+    }
+
+    private List<ScoredValue> scoredValues(RedisMessage response) {
+        String[] values = getStringArray(response);
+        if (values.length % 2 != 0) throw new IllegalStateException("invalid sorted set response");
+        List<ScoredValue> result = new ArrayList<>(values.length / 2);
+        for (int i = 0; i < values.length; i += 2) {
+            result.add(new ScoredValue(values[i], Double.parseDouble(values[i + 1])));
+        }
+        return result;
     }
 
     private long getInteger(RedisMessage response) {

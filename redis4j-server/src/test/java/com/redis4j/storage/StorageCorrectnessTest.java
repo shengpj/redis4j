@@ -77,4 +77,27 @@ class StorageCorrectnessTest {
             }
         }
     }
+
+    @Test
+    void concurrentSortedSetIncrementsDoNotLoseWrites() throws Exception {
+        for (Supplier<DataStore> factory : STORES) {
+            try (DataStore store = factory.get()) {
+                int threads = 8;
+                int increments = 250;
+                ExecutorService executor = Executors.newFixedThreadPool(threads);
+                CountDownLatch start = new CountDownLatch(1);
+                for (int i = 0; i < threads; i++) {
+                    executor.submit(() -> {
+                        start.await();
+                        for (int j = 0; j < increments; j++) store.zIncrBy("scores", 0.5, "member");
+                        return null;
+                    });
+                }
+                start.countDown();
+                executor.shutdown();
+                assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+                assertEquals(threads * increments * 0.5, store.zScore("scores", "member"));
+            }
+        }
+    }
 }

@@ -38,6 +38,8 @@ class AofPersistenceTest {
             assertSuccess(registry.execute("RPUSH", new String[]{"list", "a", "b"}));
             assertSuccess(registry.execute("HSET", new String[]{"hash", "field", "value"}));
             assertSuccess(registry.execute("SADD", new String[]{"set", "member"}));
+            assertSuccess(registry.execute("ZADD", new String[]{"zset", "1.5", "member"}));
+            assertSuccess(registry.execute("ZINCRBY", new String[]{"zset", "0.5", "member"}));
             assertSuccess(registry.execute("SETEX", new String[]{"expiring", "60", "value"}));
             assertSuccess(registry.execute("SPOP", new String[]{"set"}));
             registry.setCommandJournal(null);
@@ -46,11 +48,12 @@ class AofPersistenceTest {
         try (DataStore restored = new MemoryStore()) {
             CommandRegistry replayRegistry = new CommandRegistry(restored);
             AofManager reader = new AofManager(file, AofFlushPolicy.EVERYSEC, 128);
-            assertTrue(reader.recover(replayRegistry) >= 6);
+            assertTrue(reader.recover(replayRegistry) >= 8);
             assertEquals("value", restored.get("string"));
             assertArrayEquals(new String[]{"a", "b"}, restored.lRange("list", 0, -1));
             assertEquals("value", restored.hGet("hash", "field"));
             assertEquals(0, restored.sCard("set"));
+            assertEquals(2.0, restored.zScore("zset", "member"));
             assertEquals("value", restored.get("expiring"));
             assertTrue(restored.pttl("expiring") > 0);
         }

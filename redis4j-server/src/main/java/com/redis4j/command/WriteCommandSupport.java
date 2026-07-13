@@ -11,17 +11,19 @@ public final class WriteCommandSupport {
             "DEL", "EXPIRE", "EXPIREAT", "PEXPIREAT", "PERSIST", "RENAME", "FLUSHDB", "FLUSHALL",
             "LPUSH", "RPUSH", "LPOP", "RPOP", "LSET", "LTRIM",
             "HSET", "HSETNX", "HDEL", "HMSET", "HINCRBY",
-            "SADD", "SREM", "SMOVE", "SPOP");
+            "SADD", "SREM", "SMOVE", "SPOP", "ZADD", "ZREM", "ZINCRBY");
     private static final Set<String> FIRST_KEY_COMMANDS = Set.of(
             "GET", "SET", "SETNX", "SETEX", "INCR", "INCRBY", "DECR", "DECRBY", "STRLEN", "APPEND",
             "EXPIRE", "EXPIREAT", "PEXPIREAT", "TTL", "PTTL", "PERSIST", "TYPE",
             "LPUSH", "RPUSH", "LPOP", "RPOP", "LLEN", "LRANGE", "LSET", "LTRIM", "LINDEX",
             "HSET", "HSETNX", "HGET", "HGETALL", "HDEL", "HEXISTS", "HLEN", "HKEYS", "HVALS",
             "HMSET", "HMGET", "HINCRBY", "HSCAN", "SADD", "SREM", "SISMEMBER", "SCARD", "SMEMBERS",
-            "SPOP", "SRANDMEMBER", "SSCAN");
+            "SPOP", "SRANDMEMBER", "SSCAN", "ZADD", "ZREM", "ZSCORE", "ZCARD", "ZINCRBY",
+            "ZRANGE", "ZREVRANGE", "ZRANK", "ZREVRANK", "ZCOUNT", "ZRANGEBYSCORE", "ZSCAN");
     private static final Set<String> ALL_KEY_COMMANDS = Set.of("MGET", "DEL", "EXISTS", "SINTER", "SUNION", "SDIFF");
     private static final Set<String> NON_GROWING_WRITES = Set.of(
-            "DEL", "PERSIST", "FLUSHDB", "FLUSHALL", "LPOP", "RPOP", "LTRIM", "HDEL", "SREM", "SPOP");
+            "DEL", "PERSIST", "FLUSHDB", "FLUSHALL", "LPOP", "RPOP", "LTRIM", "HDEL", "SREM", "SPOP",
+            "ZREM");
 
     private WriteCommandSupport() {}
 
