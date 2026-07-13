@@ -4,7 +4,9 @@ import com.redis4j.command.impl.*;
 import com.redis4j.protocol.response.CommandResponse;
 import com.redis4j.protocol.response.CommandResponses;
 import com.redis4j.storage.DataStore;
+import com.redis4j.storage.memory.MemoryManagedStore;
 import com.redis4j.storage.memory.MemoryLimitManager;
+import com.redis4j.storage.memory.WriteBackup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,6 +14,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.List;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Callable;
@@ -25,6 +28,7 @@ public class CommandRegistry {
 
     private final Map<String, Command> commands;
     private final DataStore dataStore;
+    private final MemoryManagedStore managedStore;
     private final Object writeCommandLock = new Object();
     private volatile CommandJournal commandJournal;
     private volatile MemoryLimitManager memoryLimitManager;
@@ -32,6 +36,7 @@ public class CommandRegistry {
     public CommandRegistry(DataStore dataStore) {
         this.commands = new HashMap<>();
         this.dataStore = dataStore;
+        this.managedStore = dataStore instanceof MemoryManagedStore store ? store : null;
         registerDefaultCommands();
     }
 
@@ -59,15 +64,26 @@ public class CommandRegistry {
                 || memoryManager != null && memoryManager.isEnabled()
                 && WriteCommandSupport.isWriteCommand(commandName);
         if (writeCommand) {
-            CommandResponse response;
-            CompletableFuture<Void> journalCompletion = null;
-            List<String> evictedKeys = List.of();
-            // 锁内完成数据修改和按序入队；磁盘等待移到锁外，使单写线程能够聚合多个连接的记录。
             synchronized (writeCommandLock) {
-                MemoryLimitManager.WriteBackup backup = memoryManager == null
-                        ? null : memoryManager.capture(commandName, args);
-                response = executeCommand(commandName, args);
+                // 在同一临界区内等待持久化最终结果，失败回滚时不会覆盖后续写命令。
+                boolean journaledWrite = journal != null && journal.isWriteCommand(commandName);
+                if (journaledWrite) {
+                    try {
+                        journal.ensureWritable();
+                    } catch (Exception e) {
+                        logger.error("Command journal is not writable: {}", commandName, e);
+                        return persistenceError(e);
+                    }
+                }
+                if (managedStore == null) {
+                    logger.error("DataStore does not support rollback for write command: {}", commandName);
+                    return CommandResponses.error("MISCONF DataStore does not support transactional rollback");
+                }
+
+                WriteBackup backup = captureWriteBackup(commandName, args);
+                CommandResponse response = executeCommand(commandName, args);
                 if (!(response instanceof CommandResponse.Error)) {
+                    List<String> evictedKeys = List.of();
                     if (memoryManager != null) {
                         memoryManager.recordAccess(commandName, args);
                         MemoryLimitManager.EnforcementResult enforcement = memoryManager.enforce(commandName, backup);
@@ -75,33 +91,77 @@ public class CommandRegistry {
                             return CommandResponses.error("OOM command not allowed when used memory > 'maxmemory'");
                         }
                         evictedKeys = enforcement.evictedKeys();
+                        backup = enforcement.backup();
                     }
-                    try {
-                        if (journal != null && journal.isWriteCommand(commandName)) {
-                            journalCompletion = journal.appendWithEvictions(commandName, args, response, evictedKeys);
+                    if (journaledWrite) {
+                        try {
+                            CompletableFuture<Void> completion = journal.appendWithEvictions(
+                                    commandName, args, response, evictedKeys);
+                            Throwable failure = awaitCompletion(completion);
+                            if (failure != null) {
+                                logger.error("Failed to persist command: {}", commandName, failure);
+                                return rollbackAfterPersistenceFailure(commandName, backup, failure);
+                            }
+                        } catch (Exception e) {
+                            logger.error("Failed to append command to journal: {}", commandName, e);
+                            return rollbackAfterPersistenceFailure(commandName, backup, e);
                         }
-                    } catch (Exception e) {
-                        logger.error("Failed to append command to journal: {}", commandName, e);
-                        return CommandResponses.error("MISCONF AOF persistence failed: " + e.getMessage());
                     }
                 }
+                return response;
             }
-            if (journalCompletion != null) {
-                try {
-                    journalCompletion.get();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return CommandResponses.error("MISCONF interrupted while waiting for AOF persistence");
-                } catch (ExecutionException e) {
-                    logger.error("Failed to persist AOF command: {}", commandName, e.getCause());
-                    return CommandResponses.error("MISCONF AOF persistence failed: " + e.getCause().getMessage());
-                }
-            }
-            return response;
         }
         CommandResponse response = executeCommand(commandName, args);
         if (memoryManager != null) memoryManager.recordAccess(commandName, args);
         return response;
+    }
+
+    private WriteBackup captureWriteBackup(String commandName, String[] args) {
+        Set<String> keys = WriteCommandSupport.keys(commandName, args);
+        if ("FLUSHDB".equalsIgnoreCase(commandName) || "FLUSHALL".equalsIgnoreCase(commandName)) {
+            keys = dataStore.getAllKeys();
+        }
+        return WriteBackup.capture(managedStore, keys);
+    }
+
+    private CommandResponse rollbackAfterPersistenceFailure(String commandName, WriteBackup backup,
+                                                              Throwable failure) {
+        try {
+            backup.restore(managedStore);
+        } catch (Exception rollbackFailure) {
+            failure.addSuppressed(rollbackFailure);
+            logger.error("Failed to rollback command after persistence failure: {}", commandName, rollbackFailure);
+            return CommandResponses.error("MISCONF persistence and rollback both failed: " + messageOf(failure));
+        }
+        return persistenceError(failure);
+    }
+
+    private static Throwable awaitCompletion(CompletableFuture<Void> completion) {
+        boolean interrupted = false;
+        try {
+            while (true) {
+                try {
+                    completion.get();
+                    return null;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                } catch (ExecutionException e) {
+                    return e.getCause() == null ? e : e.getCause();
+                } catch (CancellationException e) {
+                    return e;
+                }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    private static CommandResponse persistenceError(Throwable failure) {
+        return CommandResponses.error("MISCONF AOF persistence failed: " + messageOf(failure));
+    }
+
+    private static String messageOf(Throwable failure) {
+        return failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage();
     }
 
     /** AOF 启动恢复专用入口，重放时不能再次写入 AOF。 */

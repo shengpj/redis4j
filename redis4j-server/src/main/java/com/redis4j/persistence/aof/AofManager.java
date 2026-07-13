@@ -50,6 +50,7 @@ public final class AofManager implements CommandJournal, AutoCloseable {
     private final AofFlushPolicy flushPolicy;
     private final ArrayBlockingQueue<AppendTask> queue;
     private final boolean useRdbPreamble;
+    private final Object enqueueLock = new Object();
     private final AtomicBoolean started = new AtomicBoolean();
     private final AtomicBoolean rewriting = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -89,6 +90,14 @@ public final class AofManager implements CommandJournal, AutoCloseable {
     @Override
     public boolean isWriteCommand(String commandName) {
         return WriteCommandSupport.isWriteCommand(commandName);
+    }
+
+    @Override
+    public void ensureWritable() throws IOException {
+        IOException currentFailure = failure;
+        if (currentFailure != null) throw new IOException("AOF writer is unavailable", currentFailure);
+        if (closed.get()) throw new IOException("AOF manager is closed");
+        if (!started.get()) throw new IOException("AOF writer has not been started");
     }
 
     @Override
@@ -220,32 +229,32 @@ public final class AofManager implements CommandJournal, AutoCloseable {
     }
 
     private CompletableFuture<Void> enqueueCommands(List<AofCommand> commands, boolean force) throws IOException {
-        IOException currentFailure = failure;
-        if (currentFailure != null) throw new IOException("AOF writer is unavailable", currentFailure);
-        if (!started.get()) throw new IOException("AOF writer has not been started");
         byte[] record = AofRecordCodec.encode(System.currentTimeMillis(), commands);
         AppendTask task = new AppendTask(record, force, false);
-        try {
-            if (!queue.offer(task, 5, TimeUnit.SECONDS)) throw new IOException("AOF queue is full");
-            RewriteSession session = rewriteSession;
-            if (session != null) session.capture(record);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while appending AOF record", e);
+        synchronized (enqueueLock) {
+            ensureWritable();
+            try {
+                if (!queue.offer(task, 5, TimeUnit.SECONDS)) throw new IOException("AOF queue is full");
+                RewriteSession session = rewriteSession;
+                if (session != null) session.capture(record);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while appending AOF record", e);
+            }
         }
         return task.completion;
     }
 
     private CompletableFuture<Void> enqueueForce() throws IOException {
-        IOException currentFailure = failure;
-        if (currentFailure != null) throw new IOException("AOF writer is unavailable", currentFailure);
-        if (!started.get()) throw new IOException("AOF writer has not been started");
         AppendTask task = new AppendTask(null, true, false);
-        try {
-            if (!queue.offer(task, 5, TimeUnit.SECONDS)) throw new IOException("AOF queue is full");
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while forcing AOF", e);
+        synchronized (enqueueLock) {
+            ensureWritable();
+            try {
+                if (!queue.offer(task, 5, TimeUnit.SECONDS)) throw new IOException("AOF queue is full");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while forcing AOF", e);
+            }
         }
         return task.completion;
     }
@@ -285,25 +294,31 @@ public final class AofManager implements CommandJournal, AutoCloseable {
                 batch.add(first);
                 queue.drainTo(batch, MAX_BATCH_SIZE - 1);
                 inFlight = batch;
-                boolean forceBatch = flushPolicy == AofFlushPolicy.ALWAYS;
-                boolean wroteRecord = false;
-                for (AppendTask task : batch) {
-                    if (task.poison || task.record == null) {
+                long batchStart = channel.size();
+                try {
+                    boolean forceBatch = flushPolicy == AofFlushPolicy.ALWAYS;
+                    boolean wroteRecord = false;
+                    for (AppendTask task : batch) {
+                        if (task.poison || task.record == null) {
+                            forceBatch |= task.force;
+                            continue;
+                        }
+                        writeRecord(channel, writeBuffer, task.record);
+                        wroteRecord = true;
                         forceBatch |= task.force;
-                        continue;
                     }
-                    writeRecord(channel, writeBuffer, task.record);
-                    wroteRecord = true;
-                    forceBatch |= task.force;
-                }
-                flush(channel, writeBuffer);
-                dirty |= wroteRecord;
-                boolean everySecondDue = flushPolicy == AofFlushPolicy.EVERYSEC
-                        && System.nanoTime() - lastForceNanos >= TimeUnit.SECONDS.toNanos(1);
-                if (forceBatch || everySecondDue) {
-                    channel.force(false);
-                    dirty = false;
-                    lastForceNanos = System.nanoTime();
+                    flush(channel, writeBuffer);
+                    dirty |= wroteRecord;
+                    boolean everySecondDue = flushPolicy == AofFlushPolicy.EVERYSEC
+                            && System.nanoTime() - lastForceNanos >= TimeUnit.SECONDS.toNanos(1);
+                    if (forceBatch || everySecondDue) {
+                        channel.force(false);
+                        dirty = false;
+                        lastForceNanos = System.nanoTime();
+                    }
+                } catch (Exception batchFailure) {
+                    rollbackFailedBatch(channel, writeBuffer, batchStart, batchFailure);
+                    throw batchFailure;
                 }
                 for (AppendTask task : batch) if (!task.poison) task.completion.complete(null);
                 inFlight = List.of();
@@ -313,11 +328,24 @@ public final class AofManager implements CommandJournal, AutoCloseable {
             if (dirty || flushPolicy != AofFlushPolicy.NO) channel.force(false);
         } catch (Exception e) {
             IOException io = e instanceof IOException value ? value : new IOException("AOF writer failed", e);
-            failure = io;
             logger.error("AOF writer stopped unexpectedly", e);
             for (AppendTask task : inFlight) task.completion.completeExceptionally(io);
-            AppendTask task;
-            while ((task = queue.poll()) != null) task.completion.completeExceptionally(io);
+            synchronized (enqueueLock) {
+                failure = io;
+                AppendTask task;
+                while ((task = queue.poll()) != null) task.completion.completeExceptionally(io);
+            }
+        }
+    }
+
+    private static void rollbackFailedBatch(FileChannel channel, ByteBuffer buffer, long batchStart,
+                                            Exception originalFailure) {
+        buffer.clear();
+        try {
+            channel.truncate(batchStart);
+            channel.force(true);
+        } catch (IOException rollbackFailure) {
+            originalFailure.addSuppressed(rollbackFailure);
         }
     }
 

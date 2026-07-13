@@ -10,15 +10,17 @@ import java.util.List;
 public interface CommandJournal {
     boolean isWriteCommand(String commandName);
 
+    default void ensureWritable() throws IOException {
+    }
+
     CompletableFuture<Void> append(String commandName, String[] args, CommandResponse response) throws IOException;
 
     default CompletableFuture<Void> appendWithEvictions(String commandName, String[] args,
                                                           CommandResponse response, List<String> evictedKeys)
             throws IOException {
-        CompletableFuture<Void> command = append(commandName, args, response);
-        if (evictedKeys.isEmpty()) return command;
-        CompletableFuture<Void> evictions = append("DEL", evictedKeys.toArray(new String[0]),
-                new CommandResponse.IntegerValue(evictedKeys.size()));
-        return CompletableFuture.allOf(command, evictions);
+        if (!evictedKeys.isEmpty()) {
+            throw new IOException("Command journal does not support atomic eviction persistence");
+        }
+        return append(commandName, args, response);
     }
 }

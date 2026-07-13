@@ -2,10 +2,7 @@ package com.redis4j.storage.memory;
 
 import com.redis4j.command.WriteCommandSupport;
 import com.redis4j.storage.DataStore;
-import com.redis4j.storage.snapshot.SnapshotEntry;
-
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 /** 在写命令临界区内执行内存检查、回滚和淘汰。 */
@@ -34,47 +31,43 @@ public final class MemoryLimitManager {
         return WriteCommandSupport.isWriteCommand(commandName);
     }
 
-    public WriteBackup capture(String commandName, String[] args) {
-        if (!isEnabled()) return WriteBackup.EMPTY;
-        Set<String> keys = WriteCommandSupport.keys(commandName, args);
-        return new WriteBackup(keys, store.captureKeys(keys));
-    }
-
     public void recordAccess(String commandName, String[] args) {
         if (isEnabled()) store.recordAccess(WriteCommandSupport.keys(commandName, args));
     }
 
     public EnforcementResult enforce(String commandName, WriteBackup backup) {
         if (!isEnabled() || WriteCommandSupport.isGuaranteedNonGrowing(commandName)) {
-            return EnforcementResult.success(List.of());
+            return EnforcementResult.success(List.of(), backup);
         }
-        if (store.estimatedMemoryUsage() <= maximumBytes) return EnforcementResult.success(List.of());
+        if (store.estimatedMemoryUsage() <= maximumBytes) {
+            return EnforcementResult.success(List.of(), backup);
+        }
         EvictionPlan plan = store.planEvictions(maximumBytes, policy);
         if (!plan.sufficient()) {
-            store.restoreKeys(backup.keys(), backup.captured());
+            backup.restore(store);
             return EnforcementResult.rejected();
         }
-        if (!plan.keys().isEmpty()) dataStore.del(plan.keys().toArray(new String[0]));
-        return EnforcementResult.success(plan.keys());
+        WriteBackup completeBackup = backup;
+        if (!plan.keys().isEmpty()) {
+            completeBackup = backup.merge(WriteBackup.capture(store, Set.copyOf(plan.keys())));
+            dataStore.del(plan.keys().toArray(new String[0]));
+        }
+        return EnforcementResult.success(plan.keys(), completeBackup);
     }
 
     public long estimatedMemoryUsage() {
         return isEnabled() ? store.estimatedMemoryUsage() : 0;
     }
 
-    public record WriteBackup(Set<String> keys, Map<String, SnapshotEntry> captured) {
-        private static final WriteBackup EMPTY = new WriteBackup(Set.of(), Map.of());
-        public WriteBackup {
-            keys = Set.copyOf(keys);
-            captured = Map.copyOf(captured);
-        }
-    }
-
-    public record EnforcementResult(boolean accepted, List<String> evictedKeys) {
+    public record EnforcementResult(boolean accepted, List<String> evictedKeys, WriteBackup backup) {
         public EnforcementResult {
             evictedKeys = List.copyOf(evictedKeys);
         }
-        private static EnforcementResult success(List<String> keys) { return new EnforcementResult(true, keys); }
-        private static EnforcementResult rejected() { return new EnforcementResult(false, List.of()); }
+        private static EnforcementResult success(List<String> keys, WriteBackup backup) {
+            return new EnforcementResult(true, keys, backup);
+        }
+        private static EnforcementResult rejected() {
+            return new EnforcementResult(false, List.of(), WriteBackup.EMPTY);
+        }
     }
 }
