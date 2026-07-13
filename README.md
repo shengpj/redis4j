@@ -8,6 +8,7 @@ A simplified Redis implementation in Java with Netty.
 - String, List, Hash, Set data types
 - Key expiration management
 - RDB persistence
+- AOF persistence with sequential batch writes and configurable fsync policy
 - Netty-based high-performance network layer
 
 ## Requirements
@@ -28,6 +29,17 @@ java -cp target/redis4j-1.0.0-SNAPSHOT.jar com.redis4j.Redis4J server
 java -cp target/redis4j-1.0.0-SNAPSHOT.jar com.redis4j.Redis4J server -p 6380
 ```
 
+Enable AOF persistence (default policy: `everysec`):
+
+```bash
+java -jar redis4j-server/target/redis4j-server-1.0.0-SNAPSHOT.jar --appendonly --appendfsync everysec
+```
+
+Supported AOF flush policies are `always`, `everysec`, and `no`. The AOF file is
+stored as `data/appendonly.aof` by default. Records use a framed binary format
+with length and CRC32 fields so an incomplete tail can be detected and truncated
+during startup recovery.
+
 ## Run Client
 
 ```bash
@@ -45,7 +57,7 @@ java -cp target/redis4j-1.0.0-SNAPSHOT.jar com.redis4j.Redis4J client -h localho
 
 ### Key Commands
 - DEL, EXISTS
-- EXPIRE, PERSIST, TTL, PTTL
+- EXPIRE, EXPIREAT, PEXPIREAT, PERSIST, TTL, PTTL
 - RENAME, TYPE
 - KEYS, DBSIZE
 - FLUSHDB, FLUSHALL

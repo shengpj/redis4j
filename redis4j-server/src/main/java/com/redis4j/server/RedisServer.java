@@ -3,6 +3,8 @@ package com.redis4j.server;
 import com.redis4j.command.CommandRegistry;
 import com.redis4j.command.impl.ServerCommands;
 import com.redis4j.persistence.PersistenceManager;
+import com.redis4j.persistence.aof.AofFlushPolicy;
+import com.redis4j.persistence.aof.AofManager;
 import com.redis4j.storage.DataStore;
 import com.redis4j.storage.DataStoreFactory;
 import com.redis4j.storage.StorageType;
@@ -24,6 +26,8 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.io.IOException;
+import java.nio.file.Path;
 
 /**
  * Redis 服务端主类
@@ -37,6 +41,7 @@ public class RedisServer {
     private final DataStore dataStore;
     private final CommandRegistry commandRegistry;
     private final PersistenceManager persistenceManager;
+    private final AofManager aofManager;
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -53,6 +58,7 @@ public class RedisServer {
         this.dataStore = DataStoreFactory.create(config.getDataStoreType(), config.getPartitions());
         this.commandRegistry = new CommandRegistry(dataStore);
         this.persistenceManager = new PersistenceManager(dataStore, config.getDataDir());
+        this.aofManager = createAofManager(config);
         logger.info("Using DataStore type: {}", config.getDataStoreType());
     }
 
@@ -61,6 +67,7 @@ public class RedisServer {
         this.dataStore = dataStore;
         this.commandRegistry = commandRegistry;
         this.persistenceManager = new PersistenceManager(dataStore, config.getDataDir());
+        this.aofManager = createAofManager(config);
     }
 
     /**
@@ -69,8 +76,7 @@ public class RedisServer {
     public void start() throws InterruptedException {
         logger.info("Starting Redis4J server on {}:{}", config.getHost(), config.getPort());
 
-        // 启动时加载 RDB 数据
-        persistenceManager.load();
+        initializePersistence();
 
         // Boss 线程固定为 1，因为只有一个 ServerSocketChannel 接受连接
         bossGroup = new NioEventLoopGroup(1);
@@ -151,11 +157,6 @@ public class RedisServer {
         // 停止定时任务
         persistenceManager.stop();
 
-        // 关闭前最后一次保存
-        logger.info("Saving RDB before shutdown...");
-        persistenceManager.save();
-        logger.info("RDB save completed");
-
         if (serverChannel != null) {
             serverChannel.close().syncUninterruptibly();
         }
@@ -171,6 +172,17 @@ public class RedisServer {
                 Thread.currentThread().interrupt();
             }
         }
+
+        // 所有写命令处理完毕后再关闭 AOF，确保队列中的记录全部顺序写入并刷盘。
+        if (aofManager != null) {
+            commandRegistry.setCommandJournal(null);
+            aofManager.close();
+        }
+
+        // 命令线程和 AOF 都已停止，此时生成的最终 RDB 是稳定的关闭快照。
+        logger.info("Saving RDB before shutdown...");
+        persistenceManager.save();
+        logger.info("RDB save completed");
 
         if (workerGroup != null) {
             workerGroup.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly();
@@ -199,6 +211,10 @@ public class RedisServer {
         return persistenceManager;
     }
 
+    public AofManager getAofManager() {
+        return aofManager;
+    }
+
     public ServerConfig getConfig() {
         return config;
     }
@@ -219,6 +235,10 @@ public class RedisServer {
                     }
                 }
                 case "--daemon" -> config.setDaemon(true);
+                case "--appendonly" -> config.setAppendOnly(true);
+                case "--appendfsync" -> {
+                    if (i + 1 < args.length) config.setAppendFsync(AofFlushPolicy.parse(args[++i]));
+                }
                 case "--store", "--datastore" -> {
                     if (i + 1 < args.length) {
                         String type = args[++i].toUpperCase();
@@ -239,5 +259,36 @@ public class RedisServer {
             logger.error("Failed to start server", e);
             System.exit(1);
         }
+    }
+
+    private void initializePersistence() {
+        if (aofManager == null) {
+            persistenceManager.load();
+            return;
+        }
+        boolean aofExisted = aofManager.exists();
+        try {
+            if (aofExisted) {
+                aofManager.recover(commandRegistry);
+            } else {
+                // 第一次启用 AOF 时先继承现有 RDB 数据，再写入一份 AOF 基线。
+                persistenceManager.load();
+            }
+            aofManager.start();
+            if (!aofExisted && dataStore.dbSize() > 0) {
+                aofManager.appendSnapshot(dataStore.createSnapshot());
+            }
+            commandRegistry.setCommandJournal(aofManager);
+            logger.info("AOF enabled: file={}, appendfsync={}", aofManager.getPath(), aofManager.getFlushPolicy());
+        } catch (IOException e) {
+            aofManager.close();
+            throw new IllegalStateException("Failed to initialize AOF persistence", e);
+        }
+    }
+
+    private static AofManager createAofManager(ServerConfig config) {
+        if (!config.isAppendOnly()) return null;
+        Path path = Path.of(config.getDataDir(), config.getAppendFilename());
+        return new AofManager(path, config.getAppendFsync(), config.getAofQueueCapacity());
     }
 }

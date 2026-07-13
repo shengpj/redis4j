@@ -140,6 +140,37 @@ public class KeyCommands {
         }
     }
 
+    // ==================== PEXPIREAT ====================
+
+    @RedisCommand
+    public static class KeyPExpireAtCommand extends AbstractCommand {
+        private final KeyStore dataStore;
+
+        public KeyPExpireAtCommand(KeyStore dataStore) {
+            this.dataStore = dataStore;
+        }
+
+        @Override
+        public String getName() {
+            return "PEXPIREAT";
+        }
+
+        @Override
+        public int getArity() {
+            return 3;
+        }
+
+        @Override
+        protected CommandResponse doExecute(String[] args) {
+            long timestamp = parseLong(args[1]);
+            long milliseconds = timestamp - System.currentTimeMillis();
+            if (milliseconds <= 0) {
+                return CommandResponses.integer(dataStore.del(args[0]));
+            }
+            return CommandResponses.integer(dataStore.expireMs(args[0], milliseconds) ? 1 : 0);
+        }
+    }
+
     // ==================== TTL ====================
 
     @RedisCommand

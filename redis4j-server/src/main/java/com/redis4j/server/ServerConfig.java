@@ -1,6 +1,7 @@
 package com.redis4j.server;
 
 import com.redis4j.storage.StorageType;
+import com.redis4j.persistence.aof.AofFlushPolicy;
 
 /**
  * Redis 服务端配置
@@ -17,6 +18,10 @@ public class ServerConfig {
     private int maxPendingCommandsPerConnection = 1024;
     private int commandQueueCapacity = 1024;
     private String dataDir = "./data";
+    private boolean appendOnly = false;
+    private AofFlushPolicy appendFsync = AofFlushPolicy.EVERYSEC;
+    private String appendFilename = "appendonly.aof";
+    private int aofQueueCapacity = 8192;
     private boolean daemon = false;
     private StorageType dataStoreType = StorageType.PARTITIONED;
 
@@ -118,6 +123,42 @@ public class ServerConfig {
         this.dataDir = dataDir;
     }
 
+    public boolean isAppendOnly() {
+        return appendOnly;
+    }
+
+    public void setAppendOnly(boolean appendOnly) {
+        this.appendOnly = appendOnly;
+    }
+
+    public AofFlushPolicy getAppendFsync() {
+        return appendFsync;
+    }
+
+    public void setAppendFsync(AofFlushPolicy appendFsync) {
+        this.appendFsync = java.util.Objects.requireNonNull(appendFsync, "appendFsync");
+    }
+
+    public String getAppendFilename() {
+        return appendFilename;
+    }
+
+    public void setAppendFilename(String appendFilename) {
+        if (appendFilename == null || appendFilename.isBlank()) {
+            throw new IllegalArgumentException("appendFilename cannot be blank");
+        }
+        this.appendFilename = appendFilename;
+    }
+
+    public int getAofQueueCapacity() {
+        return aofQueueCapacity;
+    }
+
+    public void setAofQueueCapacity(int aofQueueCapacity) {
+        if (aofQueueCapacity <= 0) throw new IllegalArgumentException("aofQueueCapacity must be positive");
+        this.aofQueueCapacity = aofQueueCapacity;
+    }
+
     public boolean isDaemon() {
         return daemon;
     }
@@ -139,6 +180,10 @@ public class ServerConfig {
                 ", maxPendingCommandsPerConnection=" + maxPendingCommandsPerConnection +
                 ", commandQueueCapacity=" + commandQueueCapacity +
                 ", dataDir='" + dataDir + '\'' +
+                ", appendOnly=" + appendOnly +
+                ", appendFsync=" + appendFsync +
+                ", appendFilename='" + appendFilename + '\'' +
+                ", aofQueueCapacity=" + aofQueueCapacity +
                 ", daemon=" + daemon +
                 '}';
     }
