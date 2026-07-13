@@ -117,7 +117,8 @@ public class RedisServer {
         commandRegistry.register(new ServerCommands.SaveCommand(persistenceManager));
         commandRegistry.register(new ServerCommands.BgSaveCommand(persistenceManager));
         commandRegistry.register(new ServerCommands.LastSaveCommand(persistenceManager));
-        commandRegistry.register(new ServerCommands.InfoCommand(dataStore, config));
+        commandRegistry.register(new ServerCommands.InfoCommand(dataStore, config,
+                observability::connectionMetrics));
         if (aofManager != null) {
             commandRegistry.register(new ServerCommands.BgRewriteAofCommand(aofManager, commandRegistry, dataStore));
         }
@@ -136,10 +137,15 @@ public class RedisServer {
                     protected void initChannel(SocketChannel ch) throws Exception {
                         ChannelPipeline pipeline = ch.pipeline();
 
-                        // 空闲超时：60 秒无读事件自动关连，防止半连接占用资源
-                        pipeline.addLast(new IdleStateHandler(30, 0, 0, TimeUnit.SECONDS));
+                        if (config.getClientIdleTimeoutSeconds() > 0) {
+                            pipeline.addLast(new IdleStateHandler(
+                                    config.getClientIdleTimeoutSeconds(), 0, 0, TimeUnit.SECONDS));
+                        }
 
-                        // 使用 Netty codec-redis
+                        // 该处理器位于编码器的出站下游，统计实际写入 Socket 的 RESP 字节。
+                        pipeline.addLast(new ClientOutputBufferLimitHandler(pubSubBroker,
+                                config.getClientOutputBufferLimitNormal(),
+                                config.getClientOutputBufferLimitPubSub()));
                         pipeline.addLast(new RedisDecoder(config.getMaxFrameLength(), FixedRedisMessagePool.INSTANCE));
                         pipeline.addLast(new RedisMessageSizeLimiter(config.getMaxFrameLength()));
                         pipeline.addLast(new RedisBulkStringAggregator());
@@ -276,6 +282,22 @@ public class RedisServer {
                 }
                 case "--slowlog-max-len" -> {
                     if (i + 1 < args.length) config.setSlowLogMaxLen(Integer.parseInt(args[++i]));
+                }
+                case "--maxclients" -> {
+                    if (i + 1 < args.length) config.setMaxClients(Integer.parseInt(args[++i]));
+                }
+                case "--timeout" -> {
+                    if (i + 1 < args.length) config.setClientIdleTimeoutSeconds(Integer.parseInt(args[++i]));
+                }
+                case "--client-output-buffer-limit-normal" -> {
+                    if (i + 1 < args.length) {
+                        config.setClientOutputBufferLimitNormal(parseMemorySize(args[++i]));
+                    }
+                }
+                case "--client-output-buffer-limit-pubsub" -> {
+                    if (i + 1 < args.length) {
+                        config.setClientOutputBufferLimitPubSub(parseMemorySize(args[++i]));
+                    }
                 }
                 case "--store", "--datastore" -> {
                     if (i + 1 < args.length) {

@@ -8,25 +8,34 @@ import com.redis4j.protocol.response.CommandResponses;
 import com.redis4j.protocol.response.CommandResponse;
 import com.redis4j.command.CommandRegistry;
 import com.redis4j.server.ServerConfig;
+import com.redis4j.server.ClientConnectionMetrics;
 import com.redis4j.storage.DataStore;
 import com.redis4j.storage.memory.MemoryManagedStore;
 import com.redis4j.storage.snapshot.SnapshotProvider;
 
 import java.util.Locale;
+import java.util.function.Supplier;
 
 /**
  * 服务器控制命令实现
  */
 public class ServerCommands {
 
-    /** INFO MEMORY - 返回内存限制模块使用的估算内存指标。 */
+    /** INFO MEMORY/CLIENTS - 返回内存或客户端资源指标。 */
     public static class InfoCommand extends AbstractCommand {
         private final DataStore dataStore;
         private final ServerConfig config;
+        private final Supplier<ClientConnectionMetrics> connectionMetrics;
 
         public InfoCommand(DataStore dataStore, ServerConfig config) {
+            this(dataStore, config, () -> ClientConnectionMetrics.EMPTY);
+        }
+
+        public InfoCommand(DataStore dataStore, ServerConfig config,
+                           Supplier<ClientConnectionMetrics> connectionMetrics) {
             this.dataStore = dataStore;
             this.config = config;
+            this.connectionMetrics = connectionMetrics;
         }
 
         @Override
@@ -41,9 +50,9 @@ public class ServerCommands {
 
         @Override
         protected CommandResponse doExecute(String[] args) {
-            if (!"MEMORY".equalsIgnoreCase(args[0])) {
+            if ("CLIENTS".equalsIgnoreCase(args[0])) return clientsInfo();
+            if (!"MEMORY".equalsIgnoreCase(args[0]))
                 return CommandResponses.error("ERR unsupported INFO section '" + args[0] + "'");
-            }
             long usedMemory = dataStore instanceof MemoryManagedStore store
                     ? store.estimatedMemoryUsage() : 0;
             long maximumMemory = config.getMaxMemoryBytes();
@@ -56,6 +65,16 @@ public class ServerCommands {
                     + "maxmemory_policy:" + config.getMaxMemoryPolicy().name().toLowerCase(Locale.ROOT)
                             .replace('_', '-') + "\r\n"
                     + "db0_keys:" + dataStore.dbSize() + "\r\n";
+            return CommandResponses.bulkString(info);
+        }
+
+        private CommandResponse clientsInfo() {
+            ClientConnectionMetrics metrics = connectionMetrics.get();
+            String info = "# Clients\r\n"
+                    + "connected_clients:" + metrics.connectedClients() + "\r\n"
+                    + "maxclients:" + config.getMaxClients() + "\r\n"
+                    + "peak_connected_clients:" + metrics.peakConnectedClients() + "\r\n"
+                    + "rejected_connections:" + metrics.rejectedConnections() + "\r\n";
             return CommandResponses.bulkString(info);
         }
 

@@ -47,7 +47,9 @@ final class ClientRegistry {
                     .append(" idle=").append(seconds(now - state.lastCommandAtMillis))
                     .append(" flags=").append(subscriptions > 0 ? 'P' : 'N')
                     .append(" db=0 sub=").append(subscriptions)
-                    .append(" psub=0 multi=-1 qbuf=0 qbuf-free=0 obl=0 oll=0 omem=0 events=r cmd=")
+                    .append(" psub=0 multi=-1 qbuf=0 qbuf-free=0 obl=0 oll=0 omem=")
+                    .append(ClientOutputBufferLimitHandler.pendingBytes(channel))
+                    .append(" events=").append(channel.isWritable() ? "rw" : "r").append(" cmd=")
                     .append(state.lastCommand)
                     .append('\n');
         }

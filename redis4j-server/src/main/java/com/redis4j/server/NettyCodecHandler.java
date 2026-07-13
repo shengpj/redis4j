@@ -35,6 +35,7 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
     private final ServerObservability observability;
     private final Deque<ParsedCommand> pendingCommands = new ArrayDeque<>();
     private boolean commandRunning;
+    private boolean connectionAdmitted;
 
     private static final int DEFAULT_MAX_PENDING_COMMANDS_PER_CONNECTION = 1024;
     private final int maxPendingCommandsPerConnection;
@@ -287,13 +288,22 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         pendingCommands.clear();
         pubSubBroker.remove(ctx.channel());
-        observability.remove(ctx.channel());
+        if (connectionAdmitted) {
+            connectionAdmitted = false;
+            observability.remove(ctx.channel());
+        }
         super.channelInactive(ctx);
     }
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
-        observability.register(ctx.channel());
+        if (!observability.register(ctx.channel())) {
+            logger.warn("Maximum client connections reached, rejecting: {}", ctx.channel().remoteAddress());
+            ctx.writeAndFlush(RedisMessageHelper.error("ERR max number of clients reached"))
+                    .addListener(io.netty.channel.ChannelFutureListener.CLOSE);
+            return;
+        }
+        connectionAdmitted = true;
         super.channelActive(ctx);
     }
 

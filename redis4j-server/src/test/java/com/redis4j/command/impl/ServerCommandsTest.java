@@ -3,6 +3,7 @@ package com.redis4j.command.impl;
 import com.redis4j.command.CommandRegistry;
 import com.redis4j.protocol.response.CommandResponse;
 import com.redis4j.server.ServerConfig;
+import com.redis4j.server.ClientConnectionMetrics;
 import com.redis4j.storage.MemoryStore;
 import com.redis4j.storage.memory.EvictionPolicy;
 import org.junit.jupiter.api.Test;
@@ -31,6 +32,26 @@ class ServerCommandsTest {
             assertTrue(info.value().contains("maxmemory:1048576\r\n"));
             assertTrue(info.value().contains("maxmemory_policy:allkeys-lru\r\n"));
             assertTrue(info.value().contains("db0_keys:1\r\n"));
+        }
+    }
+
+    @Test
+    void infoClientsReportsConnectionLimitsAndCounters() {
+        try (MemoryStore store = new MemoryStore()) {
+            ServerConfig config = new ServerConfig();
+            config.setMaxClients(250);
+            CommandRegistry registry = new CommandRegistry(store);
+            registry.register(new ServerCommands.InfoCommand(store, config,
+                    () -> new ClientConnectionMetrics(12, 20, 3)));
+
+            CommandResponse response = registry.execute("INFO", new String[]{"clients"});
+
+            CommandResponse.BulkString info = assertInstanceOf(CommandResponse.BulkString.class, response);
+            assertTrue(info.value().contains("# Clients\r\n"));
+            assertTrue(info.value().contains("connected_clients:12\r\n"));
+            assertTrue(info.value().contains("maxclients:250\r\n"));
+            assertTrue(info.value().contains("peak_connected_clients:20\r\n"));
+            assertTrue(info.value().contains("rejected_connections:3\r\n"));
         }
     }
 }

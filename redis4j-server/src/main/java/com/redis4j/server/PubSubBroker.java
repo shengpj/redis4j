@@ -47,8 +47,7 @@ final class PubSubBroker {
 
         int delivered = 0;
         for (Channel channel : Set.copyOf(current)) {
-            if (!channel.isActive() || !channel.isWritable()) {
-                if (channel.isActive()) channel.close();
+            if (!channel.isActive()) {
                 remove(channel);
                 continue;
             }

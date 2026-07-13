@@ -13,18 +13,28 @@ final class ServerObservability {
     private final ServerConfig config;
     private final SlowLog slowLog;
     private final ClientRegistry clients = new ClientRegistry();
+    private final ConnectionLimiter connectionLimiter;
 
     ServerObservability(ServerConfig config) {
         this.config = config;
         this.slowLog = new SlowLog(config.getSlowLogSlowerThanMicros(), config.getSlowLogMaxLen());
+        this.connectionLimiter = new ConnectionLimiter(config.getMaxClients());
     }
 
-    void register(Channel channel) {
-        clients.register(channel);
+    boolean register(Channel channel) {
+        if (!connectionLimiter.tryAcquire()) return false;
+        try {
+            clients.register(channel);
+            return true;
+        } catch (RuntimeException e) {
+            connectionLimiter.release();
+            throw e;
+        }
     }
 
     void remove(Channel channel) {
         clients.remove(channel);
+        connectionLimiter.release();
     }
 
     void commandReceived(Channel channel, String command) {
@@ -151,5 +161,9 @@ final class ServerObservability {
 
     ClientRegistry clients() {
         return clients;
+    }
+
+    ClientConnectionMetrics connectionMetrics() {
+        return connectionLimiter.snapshot();
     }
 }

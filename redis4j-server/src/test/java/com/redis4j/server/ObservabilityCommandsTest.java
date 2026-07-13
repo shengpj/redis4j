@@ -86,6 +86,8 @@ class ObservabilityCommandsTest {
         config.setMaxMemoryBytes(4096);
         config.setMaxMemoryPolicy(EvictionPolicy.ALLKEYS_LRU);
         config.setSlowLogMaxLen(64);
+        config.setMaxClients(250);
+        config.setClientIdleTimeoutSeconds(45);
         try (Fixture fixture = new Fixture(config)) {
             fixture.channel.writeInbound(request("CONFIG", "GET", "slowlog-*"));
             ArrayRedisMessage values = (ArrayRedisMessage) awaitOutbound(fixture.channel);
@@ -99,6 +101,16 @@ class ObservabilityCommandsTest {
             assertArrayEquals(new String[]{"maxmemory", "4096", "maxmemory-policy", "allkeys-lru"},
                     strings(memory));
             releaseDeep(memory);
+
+            fixture.channel.writeInbound(request("CONFIG", "GET", "maxclients"));
+            ArrayRedisMessage clients = (ArrayRedisMessage) awaitOutbound(fixture.channel);
+            assertArrayEquals(new String[]{"maxclients", "250"}, strings(clients));
+            releaseDeep(clients);
+
+            fixture.channel.writeInbound(request("CONFIG", "GET", "timeout"));
+            ArrayRedisMessage timeout = (ArrayRedisMessage) awaitOutbound(fixture.channel);
+            assertArrayEquals(new String[]{"timeout", "45"}, strings(timeout));
+            releaseDeep(timeout);
 
             fixture.channel.writeInbound(request("CONFIG", "SET", "maxmemory", "1"));
             RedisMessage error = awaitOutbound(fixture.channel);

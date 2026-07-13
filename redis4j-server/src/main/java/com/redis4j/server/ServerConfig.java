@@ -23,6 +23,10 @@ public class ServerConfig {
     private int maxArrayLength = 1024;
     private int maxPendingCommandsPerConnection = 1024;
     private int commandQueueCapacity = 1024;
+    private int maxClients = 10_000;
+    private int clientIdleTimeoutSeconds = 30;
+    private long clientOutputBufferLimitNormal = 8L * 1024 * 1024;
+    private long clientOutputBufferLimitPubSub = 32L * 1024 * 1024;
     private String dataDir = "./data";
     private boolean appendOnly = false;
     private AofFlushPolicy appendFsync = AofFlushPolicy.EVERYSEC;
@@ -126,6 +130,44 @@ public class ServerConfig {
     public void setCommandQueueCapacity(int commandQueueCapacity) {
         if (commandQueueCapacity <= 0) throw new IllegalArgumentException("commandQueueCapacity must be positive");
         this.commandQueueCapacity = commandQueueCapacity;
+    }
+
+    public int getMaxClients() {
+        return maxClients;
+    }
+
+    public void setMaxClients(int maxClients) {
+        if (maxClients <= 0) throw new IllegalArgumentException("maxClients must be positive");
+        this.maxClients = maxClients;
+    }
+
+    public int getClientIdleTimeoutSeconds() {
+        return clientIdleTimeoutSeconds;
+    }
+
+    public void setClientIdleTimeoutSeconds(int clientIdleTimeoutSeconds) {
+        if (clientIdleTimeoutSeconds < 0) {
+            throw new IllegalArgumentException("clientIdleTimeoutSeconds cannot be negative");
+        }
+        this.clientIdleTimeoutSeconds = clientIdleTimeoutSeconds;
+    }
+
+    public long getClientOutputBufferLimitNormal() {
+        return clientOutputBufferLimitNormal;
+    }
+
+    public void setClientOutputBufferLimitNormal(long bytes) {
+        if (bytes < 0) throw new IllegalArgumentException("clientOutputBufferLimitNormal cannot be negative");
+        this.clientOutputBufferLimitNormal = bytes;
+    }
+
+    public long getClientOutputBufferLimitPubSub() {
+        return clientOutputBufferLimitPubSub;
+    }
+
+    public void setClientOutputBufferLimitPubSub(long bytes) {
+        if (bytes < 0) throw new IllegalArgumentException("clientOutputBufferLimitPubSub cannot be negative");
+        this.clientOutputBufferLimitPubSub = bytes;
     }
 
     public String getDataDir() {
@@ -248,6 +290,10 @@ public class ServerConfig {
         values.put("max-array-length", Integer.toString(maxArrayLength));
         values.put("max-pending-commands-per-connection", Integer.toString(maxPendingCommandsPerConnection));
         values.put("command-queue-capacity", Integer.toString(commandQueueCapacity));
+        values.put("maxclients", Integer.toString(maxClients));
+        values.put("timeout", Integer.toString(clientIdleTimeoutSeconds));
+        values.put("client-output-buffer-limit-normal", Long.toString(clientOutputBufferLimitNormal));
+        values.put("client-output-buffer-limit-pubsub", Long.toString(clientOutputBufferLimitPubSub));
         values.put("dir", dataDir);
         values.put("appendonly", yesNo(appendOnly));
         values.put("appendfsync", appendFsync.name().toLowerCase(Locale.ROOT));
@@ -288,6 +334,10 @@ public class ServerConfig {
                 ", maxArrayLength=" + maxArrayLength +
                 ", maxPendingCommandsPerConnection=" + maxPendingCommandsPerConnection +
                 ", commandQueueCapacity=" + commandQueueCapacity +
+                ", maxClients=" + maxClients +
+                ", clientIdleTimeoutSeconds=" + clientIdleTimeoutSeconds +
+                ", clientOutputBufferLimitNormal=" + clientOutputBufferLimitNormal +
+                ", clientOutputBufferLimitPubSub=" + clientOutputBufferLimitPubSub +
                 ", dataDir='" + dataDir + '\'' +
                 ", appendOnly=" + appendOnly +
                 ", appendFsync=" + appendFsync +
