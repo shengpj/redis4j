@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Callable;
 
 /**
  * 命令注册表
@@ -103,6 +104,13 @@ public class CommandRegistry {
     public void setCommandJournal(CommandJournal commandJournal) {
         synchronized (writeCommandLock) {
             this.commandJournal = commandJournal;
+        }
+    }
+
+    /** 在与普通写命令相同的全局临界区内执行维护操作。 */
+    public <T> T withWriteCommandLock(Callable<T> operation) throws Exception {
+        synchronized (writeCommandLock) {
+            return operation.call();
         }
     }
 

@@ -22,6 +22,9 @@ public class ServerConfig {
     private AofFlushPolicy appendFsync = AofFlushPolicy.EVERYSEC;
     private String appendFilename = "appendonly.aof";
     private int aofQueueCapacity = 8192;
+    private boolean aofUseRdbPreamble = true;
+    private long autoAofRewriteMinSize = 64L * 1024 * 1024;
+    private int autoAofRewritePercentage = 100;
     private boolean daemon = false;
     private StorageType dataStoreType = StorageType.PARTITIONED;
 
@@ -159,6 +162,34 @@ public class ServerConfig {
         this.aofQueueCapacity = aofQueueCapacity;
     }
 
+    public boolean isAofUseRdbPreamble() {
+        return aofUseRdbPreamble;
+    }
+
+    public void setAofUseRdbPreamble(boolean aofUseRdbPreamble) {
+        this.aofUseRdbPreamble = aofUseRdbPreamble;
+    }
+
+    public long getAutoAofRewriteMinSize() {
+        return autoAofRewriteMinSize;
+    }
+
+    public void setAutoAofRewriteMinSize(long autoAofRewriteMinSize) {
+        if (autoAofRewriteMinSize < 0) throw new IllegalArgumentException("autoAofRewriteMinSize cannot be negative");
+        this.autoAofRewriteMinSize = autoAofRewriteMinSize;
+    }
+
+    public int getAutoAofRewritePercentage() {
+        return autoAofRewritePercentage;
+    }
+
+    public void setAutoAofRewritePercentage(int autoAofRewritePercentage) {
+        if (autoAofRewritePercentage < 0) {
+            throw new IllegalArgumentException("autoAofRewritePercentage cannot be negative");
+        }
+        this.autoAofRewritePercentage = autoAofRewritePercentage;
+    }
+
     public boolean isDaemon() {
         return daemon;
     }
@@ -184,6 +215,9 @@ public class ServerConfig {
                 ", appendFsync=" + appendFsync +
                 ", appendFilename='" + appendFilename + '\'' +
                 ", aofQueueCapacity=" + aofQueueCapacity +
+                ", aofUseRdbPreamble=" + aofUseRdbPreamble +
+                ", autoAofRewriteMinSize=" + autoAofRewriteMinSize +
+                ", autoAofRewritePercentage=" + autoAofRewritePercentage +
                 ", daemon=" + daemon +
                 '}';
     }

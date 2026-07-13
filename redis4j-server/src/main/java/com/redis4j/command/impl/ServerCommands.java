@@ -3,13 +3,48 @@ package com.redis4j.command.impl;
 import com.redis4j.command.AbstractCommand;
 import com.redis4j.command.annotation.RedisCommand;
 import com.redis4j.persistence.PersistenceManager;
+import com.redis4j.persistence.aof.AofManager;
 import com.redis4j.protocol.response.CommandResponses;
 import com.redis4j.protocol.response.CommandResponse;
+import com.redis4j.command.CommandRegistry;
+import com.redis4j.storage.snapshot.SnapshotProvider;
 
 /**
  * 服务器控制命令实现
  */
 public class ServerCommands {
+
+    /** BGREWRITEAOF - 后台生成紧凑 AOF 文件。 */
+    public static class BgRewriteAofCommand extends AbstractCommand {
+        private final AofManager aofManager;
+        private final CommandRegistry commandRegistry;
+        private final SnapshotProvider snapshotProvider;
+
+        public BgRewriteAofCommand(AofManager aofManager, CommandRegistry commandRegistry,
+                                   SnapshotProvider snapshotProvider) {
+            this.aofManager = aofManager;
+            this.commandRegistry = commandRegistry;
+            this.snapshotProvider = snapshotProvider;
+        }
+
+        @Override
+        public String getName() {
+            return "BGREWRITEAOF";
+        }
+
+        @Override
+        public int getArity() {
+            return 1;
+        }
+
+        @Override
+        protected CommandResponse doExecute(String[] args) {
+            if (!aofManager.bgRewrite(commandRegistry, snapshotProvider)) {
+                return CommandResponses.error("ERR AOF rewrite already in progress or AOF is unavailable");
+            }
+            return CommandResponses.simpleString("Background append only file rewriting started");
+        }
+    }
 
     /**
      * SAVE - 同步阻塞保存 RDB 快照

@@ -28,9 +28,13 @@ class ResourceLimitTest {
     @Test
     void validatesResourceLimits() {
         ServerConfig config = new ServerConfig();
+        assertTrue(config.isAofUseRdbPreamble());
         assertThrows(IllegalArgumentException.class, () -> config.setMaxFrameLength(0));
         assertThrows(IllegalArgumentException.class, () -> config.setMaxArrayLength(0));
         assertThrows(IllegalArgumentException.class, () -> config.setMaxPendingCommandsPerConnection(0));
         assertThrows(IllegalArgumentException.class, () -> config.setCommandQueueCapacity(0));
+        assertThrows(IllegalArgumentException.class, () -> config.setAofQueueCapacity(0));
+        assertThrows(IllegalArgumentException.class, () -> config.setAutoAofRewriteMinSize(-1));
+        assertThrows(IllegalArgumentException.class, () -> config.setAutoAofRewritePercentage(-1));
     }
 }

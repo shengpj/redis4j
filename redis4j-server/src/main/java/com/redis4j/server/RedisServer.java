@@ -24,6 +24,8 @@ import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.io.IOException;
@@ -46,6 +48,7 @@ public class RedisServer {
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
     private ThreadPoolExecutor commandExecutor;
+    private ScheduledExecutorService aofMaintenanceExecutor;
     private Channel serverChannel;
     private final AtomicBoolean shuttingDown = new AtomicBoolean();
 
@@ -101,6 +104,9 @@ public class RedisServer {
         commandRegistry.register(new ServerCommands.SaveCommand(persistenceManager));
         commandRegistry.register(new ServerCommands.BgSaveCommand(persistenceManager));
         commandRegistry.register(new ServerCommands.LastSaveCommand(persistenceManager));
+        if (aofManager != null) {
+            commandRegistry.register(new ServerCommands.BgRewriteAofCommand(aofManager, commandRegistry, dataStore));
+        }
 
         ServerBootstrap bootstrap = new ServerBootstrap();
         bootstrap.group(bossGroup, workerGroup)
@@ -156,6 +162,9 @@ public class RedisServer {
 
         // 停止定时任务
         persistenceManager.stop();
+        if (aofMaintenanceExecutor != null) {
+            aofMaintenanceExecutor.shutdownNow();
+        }
 
         if (serverChannel != null) {
             serverChannel.close().syncUninterruptibly();
@@ -239,6 +248,9 @@ public class RedisServer {
                 case "--appendfsync" -> {
                     if (i + 1 < args.length) config.setAppendFsync(AofFlushPolicy.parse(args[++i]));
                 }
+                case "--aof-use-rdb-preamble" -> {
+                    if (i + 1 < args.length) config.setAofUseRdbPreamble(Boolean.parseBoolean(args[++i]));
+                }
                 case "--store", "--datastore" -> {
                     if (i + 1 < args.length) {
                         String type = args[++i].toUpperCase();
@@ -269,7 +281,7 @@ public class RedisServer {
         boolean aofExisted = aofManager.exists();
         try {
             if (aofExisted) {
-                aofManager.recover(commandRegistry);
+                aofManager.recover(commandRegistry, dataStore);
             } else {
                 // 第一次启用 AOF 时先继承现有 RDB 数据，再写入一份 AOF 基线。
                 persistenceManager.load();
@@ -279,6 +291,7 @@ public class RedisServer {
                 aofManager.appendSnapshot(dataStore.createSnapshot());
             }
             commandRegistry.setCommandJournal(aofManager);
+            startAofMaintenance();
             logger.info("AOF enabled: file={}, appendfsync={}", aofManager.getPath(), aofManager.getFlushPolicy());
         } catch (IOException e) {
             aofManager.close();
@@ -289,6 +302,22 @@ public class RedisServer {
     private static AofManager createAofManager(ServerConfig config) {
         if (!config.isAppendOnly()) return null;
         Path path = Path.of(config.getDataDir(), config.getAppendFilename());
-        return new AofManager(path, config.getAppendFsync(), config.getAofQueueCapacity());
+        return new AofManager(path, config.getAppendFsync(), config.getAofQueueCapacity(),
+                config.isAofUseRdbPreamble());
+    }
+
+    private void startAofMaintenance() {
+        if (config.getAutoAofRewritePercentage() == 0) return;
+        aofMaintenanceExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread thread = new Thread(r, "aof-maintenance");
+            thread.setDaemon(true);
+            return thread;
+        });
+        aofMaintenanceExecutor.scheduleWithFixedDelay(() -> {
+            if (aofManager.shouldAutoRewrite(config.getAutoAofRewriteMinSize(),
+                    config.getAutoAofRewritePercentage())) {
+                aofManager.bgRewrite(commandRegistry, dataStore);
+            }
+        }, 5, 5, TimeUnit.SECONDS);
     }
 }

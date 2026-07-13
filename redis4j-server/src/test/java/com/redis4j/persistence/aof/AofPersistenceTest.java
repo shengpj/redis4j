@@ -4,6 +4,7 @@ import com.redis4j.command.CommandRegistry;
 import com.redis4j.protocol.response.CommandResponse;
 import com.redis4j.storage.DataStore;
 import com.redis4j.storage.MemoryStore;
+import com.redis4j.storage.snapshot.SnapshotProvider;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -14,6 +15,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -160,6 +164,93 @@ class AofPersistenceTest {
             assertEquals("value", restored.get("string"));
             assertArrayEquals(new String[]{"a", "b"}, restored.lRange("list", 0, -1));
         }
+    }
+
+    @Test
+    void backgroundRewriteCompactsHistoryAndKeepsConcurrentDelta() throws Exception {
+        Path file = tempDir.resolve("rewrite.aof");
+        long sizeBeforeRewrite;
+        try (DataStore store = new MemoryStore();
+             AofManager manager = new AofManager(file, AofFlushPolicy.EVERYSEC, 4096)) {
+            manager.start();
+            List<CompletableFuture<Void>> appends = new ArrayList<>();
+            for (int i = 0; i < 10_000; i++) {
+                String value = "value-" + i;
+                store.set("key", value);
+                appends.add(manager.append("SET", new String[]{"key", value},
+                        new CommandResponse.SimpleString("OK")));
+            }
+            // 保留足够多的独立键，使快照写入阶段稳定存在，避免测试比后台线程慢而错过增量窗口。
+            for (int i = 0; i < 1_000; i++) store.set("snapshot-key-" + i, "value-" + i);
+            CompletableFuture.allOf(appends.toArray(new CompletableFuture[0])).get(20, TimeUnit.SECONDS);
+            sizeBeforeRewrite = Files.size(file);
+            assertTrue(manager.shouldAutoRewrite(1, 100));
+
+            CommandRegistry registry = new CommandRegistry(store);
+            registry.setCommandJournal(manager);
+            CountDownLatch snapshotCreated = new CountDownLatch(1);
+            CountDownLatch allowSnapshotReturn = new CountDownLatch(1);
+            SnapshotProvider coordinatedSnapshot = () -> {
+                var snapshot = store.createSnapshot();
+                snapshotCreated.countDown();
+                try {
+                    if (!allowSnapshotReturn.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("timed out coordinating AOF rewrite test");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("AOF rewrite test was interrupted", e);
+                }
+                return snapshot;
+            };
+            assertTrue(manager.bgRewrite(registry, coordinatedSnapshot));
+            assertTrue(snapshotCreated.await(5, TimeUnit.SECONDS));
+            allowSnapshotReturn.countDown();
+            assertSuccess(registry.execute("SET", new String[]{"during-rewrite", "preserved"}));
+            waitUntil(() -> !manager.isRewriting(), 20_000);
+            assertFalse(manager.shouldAutoRewrite(1, 100));
+            registry.setCommandJournal(null);
+        }
+
+        assertTrue(Files.size(file) < sizeBeforeRewrite / 4,
+                "rewritten AOF should be substantially smaller than command history");
+        assertTrue(AofManager.isHybridFile(file));
+        long validHybridSize = Files.size(file);
+        Files.write(file, new byte[]{1, 2, 3}, StandardOpenOption.APPEND);
+        try (DataStore restored = new MemoryStore()) {
+            new AofManager(file, AofFlushPolicy.NO, 16).recover(new CommandRegistry(restored), restored);
+            assertEquals("value-9999", restored.get("key"));
+            assertEquals("preserved", restored.get("during-rewrite"));
+        }
+        assertEquals(validHybridSize, Files.size(file), "invalid hybrid AOF tail should be truncated");
+    }
+
+    @Test
+    void canDisableRdbPreambleAndRewriteAsPureAof() throws Exception {
+        Path file = tempDir.resolve("pure-rewrite.aof");
+        try (DataStore store = new MemoryStore();
+             AofManager manager = new AofManager(file, AofFlushPolicy.ALWAYS, 64, false)) {
+            CommandRegistry registry = new CommandRegistry(store);
+            manager.start();
+            registry.setCommandJournal(manager);
+            assertSuccess(registry.execute("SET", new String[]{"key", "value"}));
+            assertTrue(manager.bgRewrite(registry, store));
+            waitUntil(() -> !manager.isRewriting(), 5_000);
+            registry.setCommandJournal(null);
+        }
+
+        assertFalse(AofManager.isHybridFile(file));
+        try (DataStore restored = new MemoryStore()) {
+            new AofManager(file, AofFlushPolicy.NO, 16, false).recover(new CommandRegistry(restored));
+            assertEquals("value", restored.get("key"));
+        }
+    }
+
+    private static void waitUntil(java.util.function.BooleanSupplier condition, long timeoutMillis)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline) Thread.sleep(10);
+        assertTrue(condition.getAsBoolean(), "condition was not met before timeout");
     }
 
     private static void assertSuccess(CommandResponse response) {

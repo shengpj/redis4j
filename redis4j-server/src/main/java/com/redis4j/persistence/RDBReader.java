@@ -12,6 +12,8 @@ import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -69,6 +71,32 @@ public class RDBReader {
         int loaded = apply(entries, dataStore);
         lastSaveTimestamp = file.lastModified() / 1000;
         logger.info("RDB file loaded successfully: {} keys restored", loaded);
+    }
+
+    /** 从混合持久化文件的指定区间恢复一份完整 RDB，且不对源文件建立内存映射。 */
+    public void loadRegion(DataStore dataStore, Path path, long offset, long length) throws IOException {
+        if (offset < 0 || length <= 0 || length > MAX_RDB_SIZE || length > Integer.MAX_VALUE) {
+            throw new IOException("Invalid RDB preamble region: offset=" + offset + ", length=" + length);
+        }
+        ByteBuffer buffer = ByteBuffer.allocate((int) length);
+        try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
+            channel.position(offset);
+            while (buffer.hasRemaining()) {
+                int read = channel.read(buffer);
+                if (read < 0) throw new IOException("Truncated RDB preamble");
+                if (read == 0) throw new IOException("Unable to make progress while reading RDB preamble");
+            }
+        }
+        buffer.flip();
+        List<LoadedEntry> entries;
+        try {
+            entries = parse(buffer);
+        } catch (RuntimeException e) {
+            throw new IOException("RDB preamble is truncated or corrupted", e);
+        }
+        int loaded = apply(entries, dataStore);
+        lastSaveTimestamp = Files.getLastModifiedTime(path).toMillis() / 1000;
+        logger.info("RDB preamble loaded successfully: {} keys restored", loaded);
     }
 
     private List<LoadedEntry> parse(ByteBuffer buffer) throws IOException {

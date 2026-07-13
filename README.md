@@ -40,6 +40,20 @@ stored as `data/appendonly.aof` by default. Records use a framed binary format
 with length and CRC32 fields so an incomplete tail can be detected and truncated
 during startup recovery.
 
+Use `BGREWRITEAOF` to compact the current command history manually. Redis4J also
+starts a background rewrite automatically after the file reaches 64 MiB and has
+grown by 100% since the previous rewrite. These thresholds can be changed with
+`ServerConfig.setAutoAofRewriteMinSize(...)` and
+`ServerConfig.setAutoAofRewritePercentage(...)`; set the percentage to `0` to
+disable automatic rewrites.
+
+Rewritten AOF files use hybrid persistence by default: a compact RDB snapshot is
+stored first, followed by AOF records generated while the rewrite was running.
+Startup recovery loads the RDB section and then replays only the incremental AOF
+tail. Existing pure AOF files remain supported. Use
+`--aof-use-rdb-preamble false` or
+`ServerConfig.setAofUseRdbPreamble(false)` to keep pure-AOF rewrites.
+
 ## Run Client
 
 ```bash
@@ -62,6 +76,7 @@ java -cp target/redis4j-1.0.0-SNAPSHOT.jar com.redis4j.Redis4J client -h localho
 - KEYS, DBSIZE
 - FLUSHDB, FLUSHALL
 - PING, ECHO
+- BGREWRITEAOF
 
 ### List Commands
 - LPUSH, RPUSH

@@ -52,15 +52,9 @@ public class RDBWriter {
         try {
             try (FileChannel output = FileChannel.open(temporary, StandardOpenOption.WRITE,
                     StandardOpenOption.TRUNCATE_EXISTING)) {
-                channel = output;
-                // 复用直接内存缓冲区聚合小字段，减少 FileChannel.write 调用和堆内存到本地内存的复制。
-                buffer = ByteBuffer.allocateDirect(BUFFER_SIZE);
-                writeHeader();
-                writeEntries(snapshot);
-                writeFooter();
-                flushBuffer();
+                writeSnapshot(snapshot, output);
                 // 确保文件内容进入持久化设备后，才替换正式快照。
-                channel.force(true);
+                output.force(true);
             }
             try {
                 // 临时文件与目标文件位于同一目录，优先通过原子移动一次性替换旧快照。
@@ -77,6 +71,27 @@ public class RDBWriter {
             if (!moved) Files.deleteIfExists(temporary);
         }
         logger.info("RDB file saved successfully in {} ms: {}", System.currentTimeMillis() - start, filePath);
+    }
+
+    /**
+     * 将一份完整 RDB 快照写入调用方提供的 Channel，但不关闭 Channel，也不负责 force。
+     * 混合 AOF 使用该入口在 RDB footer 后继续追加 AOF 增量记录。
+     */
+    public synchronized void writeSnapshot(DataSnapshot snapshot, FileChannel output) throws IOException {
+        if (snapshot == null || output == null) throw new IllegalArgumentException("snapshot and output are required");
+        if (channel != null) throw new IllegalStateException("RDB writer is already in use");
+        channel = output;
+        // 复用直接内存缓冲区聚合小字段，减少 FileChannel.write 调用和堆内存到本地内存的复制。
+        buffer = ByteBuffer.allocateDirect(BUFFER_SIZE);
+        try {
+            writeHeader();
+            writeEntries(snapshot);
+            writeFooter();
+            flushBuffer();
+        } finally {
+            channel = null;
+            buffer = null;
+        }
     }
 
     private void writeEntries(DataSnapshot snapshot) throws IOException {
