@@ -2,17 +2,48 @@ package com.redis4j.command.impl;
 
 import com.redis4j.command.AbstractCommand;
 import com.redis4j.command.annotation.RedisCommand;
-import com.redis4j.protocol.response.CommandResponses;
-import com.redis4j.storage.KeyStore;
 import com.redis4j.protocol.response.CommandResponse;
+import com.redis4j.protocol.response.CommandResponses;
+import com.redis4j.storage.DataStore;
+import com.redis4j.storage.KeyStore;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 
 /**
  * Key 鍛戒护瀹炵幇
  */
 public class KeyCommands {
+
+    @RedisCommand
+    public static class KeyScanCommand extends AbstractCommand {
+        private final DataStore dataStore;
+
+        public KeyScanCommand(DataStore dataStore) {
+            this.dataStore = dataStore;
+        }
+
+        @Override
+        public String getName() {
+            return "SCAN";
+        }
+
+        @Override
+        public int getArity() {
+            return -1;
+        }
+
+        @Override
+        protected CommandResponse doExecute(String[] args) {
+            ScanSupport.Options options = ScanSupport.parse(args, 0, 1);
+            List<String> keys = new ArrayList<>(dataStore.getAllKeys());
+            Collections.sort(keys);
+            return ScanSupport.response(ScanSupport.scan(keys, options));
+        }
+    }
 
     // ==================== DEL ====================
 

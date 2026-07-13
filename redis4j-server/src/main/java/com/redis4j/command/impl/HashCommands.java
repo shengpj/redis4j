@@ -13,6 +13,40 @@ import java.util.*;
  */
 public class HashCommands {
 
+    @RedisCommand
+    public static class HashScanCommand extends AbstractCommand {
+        private final HashStore dataStore;
+
+        public HashScanCommand(HashStore dataStore) {
+            this.dataStore = dataStore;
+        }
+
+        @Override
+        public String getName() {
+            return "HSCAN";
+        }
+
+        @Override
+        public int getArity() {
+            return -2;
+        }
+
+        @Override
+        protected CommandResponse doExecute(String[] args) {
+            ScanSupport.Options options = ScanSupport.parse(args, 1, 2);
+            Map<String, String> hash = dataStore.hGetAll(args[0]);
+            List<String> fields = new ArrayList<>(hash.keySet());
+            Collections.sort(fields);
+            ScanSupport.Page fieldPage = ScanSupport.scan(fields, options);
+            List<String> values = new ArrayList<>(fieldPage.values().size() * 2);
+            for (String field : fieldPage.values()) {
+                values.add(field);
+                values.add(hash.get(field));
+            }
+            return ScanSupport.response(new ScanSupport.Page(fieldPage.nextCursor(), values));
+        }
+    }
+
     // ==================== HSET ====================
 
     @RedisCommand

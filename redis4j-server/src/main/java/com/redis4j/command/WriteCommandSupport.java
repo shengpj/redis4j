@@ -17,8 +17,8 @@ public final class WriteCommandSupport {
             "EXPIRE", "EXPIREAT", "PEXPIREAT", "TTL", "PTTL", "PERSIST", "TYPE",
             "LPUSH", "RPUSH", "LPOP", "RPOP", "LLEN", "LRANGE", "LSET", "LTRIM", "LINDEX",
             "HSET", "HSETNX", "HGET", "HGETALL", "HDEL", "HEXISTS", "HLEN", "HKEYS", "HVALS",
-            "HMSET", "HMGET", "HINCRBY", "SADD", "SREM", "SISMEMBER", "SCARD", "SMEMBERS",
-            "SPOP", "SRANDMEMBER");
+            "HMSET", "HMGET", "HINCRBY", "HSCAN", "SADD", "SREM", "SISMEMBER", "SCARD", "SMEMBERS",
+            "SPOP", "SRANDMEMBER", "SSCAN");
     private static final Set<String> ALL_KEY_COMMANDS = Set.of("MGET", "DEL", "EXISTS", "SINTER", "SUNION", "SDIFF");
     private static final Set<String> NON_GROWING_WRITES = Set.of(
             "DEL", "PERSIST", "FLUSHDB", "FLUSHALL", "LPOP", "RPOP", "LTRIM", "HDEL", "SREM", "SPOP");

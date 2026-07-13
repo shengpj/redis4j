@@ -150,6 +150,10 @@ public class RedisClientDemo {
                 var keys = commands.keys(args[0]);
                 yield keys.isEmpty() ? "(empty list)" : String.join(" ", keys);
             }
+            case "SCAN" -> {
+                if (args.length < 1) throw new IllegalArgumentException("wrong number of arguments");
+                yield formatScan(commands.scan(args[0], java.util.Arrays.copyOfRange(args, 1, args.length)));
+            }
             case "INCR" -> String.valueOf(commands.incr(args[0]));
             case "DECR" -> String.valueOf(commands.decr(args[0]));
             case "INCRBY" -> String.valueOf(commands.incrBy(args[0], Long.parseLong(args[1])));
@@ -240,6 +244,11 @@ public class RedisClientDemo {
                 yield String.valueOf(commands.hExists(args[0], args[1]));
             }
             case "HLEN" -> String.valueOf(commands.hLen(args[0]));
+            case "HSCAN" -> {
+                if (args.length < 2) throw new IllegalArgumentException("wrong number of arguments");
+                yield formatScan(commands.hScan(args[0], args[1],
+                        java.util.Arrays.copyOfRange(args, 2, args.length)));
+            }
             case "SADD" -> String.valueOf(commands.sAdd(args[0], java.util.Arrays.copyOfRange(args, 1, args.length)));
             case "SREM" -> String.valueOf(commands.sRem(args[0], java.util.Arrays.copyOfRange(args, 1, args.length)));
             case "SMEMBERS" -> {
@@ -248,6 +257,11 @@ public class RedisClientDemo {
             }
             case "SISMEMBER" -> String.valueOf(commands.sIsMember(args[0], args[1]));
             case "SCARD" -> String.valueOf(commands.sCard(args[0]));
+            case "SSCAN" -> {
+                if (args.length < 2) throw new IllegalArgumentException("wrong number of arguments");
+                yield formatScan(commands.sScan(args[0], args[1],
+                        java.util.Arrays.copyOfRange(args, 2, args.length)));
+            }
             case "TYPE" -> {
                 String type = commands.type(args[0]);
                 yield type != null ? type : "none";
@@ -319,14 +333,24 @@ public class RedisClientDemo {
         return tokens.toArray(new String[0]);
     }
 
+    private static String formatScan(RedisCommands.ScanResult result) {
+        StringBuilder output = new StringBuilder("1) \"").append(result.cursor()).append("\"\n2)");
+        String[] values = result.values();
+        if (values.length == 0) return output.append(" (empty array)").toString();
+        for (int i = 0; i < values.length; i++) {
+            output.append("\n   ").append(i + 1).append(") \"").append(values[i]).append('"');
+        }
+        return output.toString();
+    }
+
     private static void printHelp() {
         System.out.println("""
             Supported commands:
               String:  PING, GET, SET, SETEX, DEL, EXISTS, EXPIRE, TTL, INCR, DECR, INCRBY, DECRBY, STRLEN, APPEND, SETNX, MGET, MSET
-              Key:     KEYS, TYPE, DBSIZE, FLUSHDB, FLUSHALL, RENAME, PERSIST, EXPIREAT, PTTL
+              Key:     KEYS, SCAN, TYPE, DBSIZE, FLUSHDB, FLUSHALL, RENAME, PERSIST, EXPIREAT, PTTL
               List:    LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN
-              Hash:    HSET, HSETNX, HGET, HGETALL, HDEL, HEXISTS, HLEN
-              Set:     SADD, SREM, SMEMBERS, SISMEMBER, SCARD
+              Hash:    HSET, HSETNX, HGET, HGETALL, HDEL, HEXISTS, HLEN, HSCAN
+              Set:     SADD, SREM, SMEMBERS, SISMEMBER, SCARD, SSCAN
               Server:  SELECT, ECHO, INFO MEMORY, SAVE, BGSAVE, LASTSAVE, TIME
               Other:   exit, quit, help
             """);

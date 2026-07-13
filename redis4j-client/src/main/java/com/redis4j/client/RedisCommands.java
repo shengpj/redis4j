@@ -320,6 +320,49 @@ public class RedisCommands {
         return getString(response);
     }
 
+    public ScanResult scan(String cursor, String... options) throws InterruptedException {
+        return scanCommand("SCAN", null, cursor, options);
+    }
+
+    public ScanResult sScan(String key, String cursor, String... options) throws InterruptedException {
+        return scanCommand("SSCAN", key, cursor, options);
+    }
+
+    public ScanResult hScan(String key, String cursor, String... options) throws InterruptedException {
+        return scanCommand("HSCAN", key, cursor, options);
+    }
+
+    private ScanResult scanCommand(String commandName, String key, String cursor, String[] options)
+            throws InterruptedException {
+        int prefixLength = key == null ? 2 : 3;
+        String[] command = new String[prefixLength + options.length];
+        command[0] = commandName;
+        int index = 1;
+        if (key != null) command[index++] = key;
+        command[index++] = cursor;
+        System.arraycopy(options, 0, command, index, options.length);
+        RedisMessage response = client.sendCommand(command);
+        List<RedisMessage> outer = RedisMessageHelper.extractArray(response);
+        if (outer == null || outer.size() != 2) throw new IllegalStateException("invalid SCAN response");
+        String nextCursor = getString(outer.get(0));
+        List<RedisMessage> values = RedisMessageHelper.extractArray(outer.get(1));
+        String[] result = values == null ? new String[0] : values.stream()
+                .map(this::getString)
+                .toArray(String[]::new);
+        return new ScanResult(nextCursor, result);
+    }
+
+    public record ScanResult(String cursor, String[] values) {
+        public ScanResult {
+            values = values.clone();
+        }
+
+        @Override
+        public String[] values() {
+            return values.clone();
+        }
+    }
+
     // ==================== 辅助方法 ====================
 
     private String getString(RedisMessage response) {

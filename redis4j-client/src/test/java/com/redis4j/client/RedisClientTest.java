@@ -102,12 +102,35 @@ class RedisClientTest {
         assertTrue(response.isCompletedExceptionally());
     }
 
+    @Test
+    void scanParsesCursorAndNestedValues() throws Exception {
+        RedisClient client = new RedisClient("127.0.0.1", port);
+        client.connect();
+        try {
+            RedisCommands.ScanResult result = new RedisCommands(client)
+                    .scan("0", "MATCH", "user:*", "COUNT", "2");
+
+            assertEquals("7", result.cursor());
+            assertArrayEquals(new String[]{"user:1", "user:2"}, result.values());
+        } finally {
+            client.disconnect();
+        }
+    }
+
     private static final class EchoHandler extends SimpleChannelInboundHandler<RedisMessage> {
         @Override
         protected void channelRead0(ChannelHandlerContext ctx, RedisMessage msg) {
             ArrayRedisMessage request = (ArrayRedisMessage) msg;
             String command = RedisMessageHelper.extractString(request.children().get(0));
             if ("BLOCK".equalsIgnoreCase(command)) {
+                return;
+            }
+            if ("SCAN".equalsIgnoreCase(command)) {
+                ctx.writeAndFlush(RedisMessageHelper.array(
+                        RedisMessageHelper.bulkString("7"),
+                        RedisMessageHelper.array(
+                                RedisMessageHelper.bulkString("user:1"),
+                                RedisMessageHelper.bulkString("user:2"))));
                 return;
             }
             String value = RedisMessageHelper.extractString(request.children().get(1));

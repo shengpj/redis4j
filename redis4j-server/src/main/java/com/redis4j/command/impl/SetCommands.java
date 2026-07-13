@@ -7,12 +7,42 @@ import com.redis4j.storage.SetStore;
 import com.redis4j.protocol.response.CommandResponse;
 
 import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 
 /**
  * Set 鍛戒护瀹炵幇
  */
 public class SetCommands {
+
+    @RedisCommand
+    public static class SetScanCommand extends AbstractCommand {
+        private final SetStore dataStore;
+
+        public SetScanCommand(SetStore dataStore) {
+            this.dataStore = dataStore;
+        }
+
+        @Override
+        public String getName() {
+            return "SSCAN";
+        }
+
+        @Override
+        public int getArity() {
+            return -2;
+        }
+
+        @Override
+        protected CommandResponse doExecute(String[] args) {
+            ScanSupport.Options options = ScanSupport.parse(args, 1, 2);
+            List<String> members = new ArrayList<>(dataStore.sMembers(args[0]));
+            Collections.sort(members);
+            return ScanSupport.response(ScanSupport.scan(members, options));
+        }
+    }
 
     // ==================== SADD ====================
 
