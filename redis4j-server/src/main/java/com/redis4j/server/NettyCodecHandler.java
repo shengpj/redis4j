@@ -30,6 +30,7 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
 
     private final CommandRegistry commandRegistry;
     private final ThreadPoolExecutor commandExecutor;
+    private final PubSubBroker pubSubBroker;
     private final Deque<ParsedCommand> pendingCommands = new ArrayDeque<>();
     private boolean commandRunning;
 
@@ -37,16 +38,22 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
     private final int maxPendingCommandsPerConnection;
 
     public NettyCodecHandler(CommandRegistry commandRegistry, ThreadPoolExecutor commandExecutor) {
-        this(commandRegistry, commandExecutor, DEFAULT_MAX_PENDING_COMMANDS_PER_CONNECTION);
+        this(commandRegistry, commandExecutor, new PubSubBroker(), DEFAULT_MAX_PENDING_COMMANDS_PER_CONNECTION);
     }
 
     public NettyCodecHandler(CommandRegistry commandRegistry, ThreadPoolExecutor commandExecutor,
                              int maxPendingCommandsPerConnection) {
+        this(commandRegistry, commandExecutor, new PubSubBroker(), maxPendingCommandsPerConnection);
+    }
+
+    NettyCodecHandler(CommandRegistry commandRegistry, ThreadPoolExecutor commandExecutor,
+                      PubSubBroker pubSubBroker, int maxPendingCommandsPerConnection) {
         if (maxPendingCommandsPerConnection <= 0) {
             throw new IllegalArgumentException("maxPendingCommandsPerConnection must be positive");
         }
         this.commandRegistry = commandRegistry;
         this.commandExecutor = commandExecutor;
+        this.pubSubBroker = pubSubBroker;
         this.maxPendingCommandsPerConnection = maxPendingCommandsPerConnection;
     }
 
@@ -97,6 +104,47 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
             return;
         }
         commandRunning = true;
+
+        if (pubSubBroker.isSubscribed(ctx.channel())
+                && !"SUBSCRIBE".equals(parsed.name())
+                && !"UNSUBSCRIBE".equals(parsed.name())
+                && !"PING".equals(parsed.name())) {
+            completeCommand(ctx, RedisMessageHelper.error(
+                    "ERR only SUBSCRIBE, UNSUBSCRIBE and PING are allowed in subscribed mode"));
+            return;
+        }
+
+        if (pubSubBroker.isSubscribed(ctx.channel()) && "PING".equals(parsed.name())) {
+            String payload = parsed.args().length == 0 ? "" : parsed.args()[0];
+            if (parsed.args().length > 1) {
+                completeCommand(ctx, RedisMessageHelper.error(
+                        "ERR wrong number of arguments for 'ping' command"));
+            } else {
+                completeCommand(ctx, RedisMessageHelper.array(
+                        RedisMessageHelper.bulkString("pong"),
+                        RedisMessageHelper.bulkString(payload)));
+            }
+            return;
+        }
+
+        if ("SUBSCRIBE".equals(parsed.name())) {
+            subscribe(ctx, parsed.args());
+            return;
+        }
+        if ("UNSUBSCRIBE".equals(parsed.name())) {
+            unsubscribe(ctx, parsed.args());
+            return;
+        }
+        if ("PUBLISH".equals(parsed.name())) {
+            if (parsed.args().length != 2) {
+                completeCommand(ctx, RedisMessageHelper.error(
+                        "ERR wrong number of arguments for 'publish' command"));
+            } else {
+                publish(ctx, parsed.args()[0], parsed.args()[1]);
+            }
+            return;
+        }
+
         try {
             commandExecutor.submit(() -> {
                 CommandResponse response;
@@ -128,9 +176,69 @@ class NettyCodecHandler extends SimpleChannelInboundHandler<RedisMessage> {
         dispatchNext(ctx);
     }
 
+    private void subscribe(ChannelHandlerContext ctx, String[] topics) {
+        if (topics.length == 0) {
+            completeCommand(ctx, RedisMessageHelper.error(
+                    "ERR wrong number of arguments for 'subscribe' command"));
+            return;
+        }
+        for (String topic : topics) {
+            int count = pubSubBroker.subscribe(ctx.channel(), topic);
+            ctx.write(subscriptionResponse("subscribe", topic, count));
+        }
+        ctx.flush();
+        completeInline(ctx);
+    }
+
+    private void publish(ChannelHandlerContext ctx, String topic, String payload) {
+        try {
+            commandExecutor.submit(() -> {
+                RedisMessage response = RedisMessageHelper.integer(pubSubBroker.publish(topic, payload));
+                try {
+                    ctx.executor().execute(() -> completeCommand(ctx, response));
+                } catch (RejectedExecutionException e) {
+                    io.netty.util.ReferenceCountUtil.release(response);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            completeCommand(ctx, RedisMessageHelper.error("ERR server is busy, try again later"));
+        }
+    }
+
+    private void unsubscribe(ChannelHandlerContext ctx, String[] requestedTopics) {
+        String[] topics = requestedTopics;
+        if (topics.length == 0) {
+            topics = pubSubBroker.subscriptions(ctx.channel()).stream().sorted().toArray(String[]::new);
+        }
+        if (topics.length == 0) {
+            ctx.writeAndFlush(subscriptionResponse("unsubscribe", null, 0));
+            completeInline(ctx);
+            return;
+        }
+        for (String topic : topics) {
+            int count = pubSubBroker.unsubscribe(ctx.channel(), topic);
+            ctx.write(subscriptionResponse("unsubscribe", topic, count));
+        }
+        ctx.flush();
+        completeInline(ctx);
+    }
+
+    private RedisMessage subscriptionResponse(String kind, String topic, int count) {
+        return RedisMessageHelper.array(
+                RedisMessageHelper.bulkString(kind),
+                RedisMessageHelper.bulkString(topic),
+                RedisMessageHelper.integer(count));
+    }
+
+    private void completeInline(ChannelHandlerContext ctx) {
+        commandRunning = false;
+        dispatchNext(ctx);
+    }
+
     @Override
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         pendingCommands.clear();
+        pubSubBroker.remove(ctx.channel());
         super.channelInactive(ctx);
     }
 

@@ -27,6 +27,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -133,6 +135,30 @@ class RedisClientTest {
         }
     }
 
+    @Test
+    void pubSubMessagesUseCallbackWithoutConsumingCommandResponses() throws Exception {
+        RedisClient client = new RedisClient("127.0.0.1", port);
+        client.connect();
+        CountDownLatch delivered = new CountDownLatch(1);
+        AtomicReference<RedisClient.PubSubMessage> received = new AtomicReference<>();
+        try {
+            assertEquals(1, client.subscribe(message -> {
+                received.set(message);
+                delivered.countDown();
+            }, "events"));
+            assertTrue(delivered.await(3, TimeUnit.SECONDS));
+            assertEquals(new RedisClient.PubSubMessage("events", "created"), received.get());
+
+            assertThrows(IllegalStateException.class, () -> client.sendCommand("GET", "key"));
+            assertEquals(0, client.unsubscribe("events"));
+            assertEquals("after-unsubscribe", RedisMessageHelper.extractString(
+                    client.sendCommand("ECHO", "after-unsubscribe")));
+            assertEquals(1, new RedisCommands(client).publish("events", "payload"));
+        } finally {
+            client.disconnect();
+        }
+    }
+
     private static final class EchoHandler extends SimpleChannelInboundHandler<RedisMessage> {
         @Override
         protected void channelRead0(ChannelHandlerContext ctx, RedisMessage msg) {
@@ -155,6 +181,30 @@ class RedisClientTest {
                         RedisMessageHelper.bulkString("10.5"),
                         RedisMessageHelper.bulkString("bob"),
                         RedisMessageHelper.bulkString("20")));
+                return;
+            }
+            if ("SUBSCRIBE".equalsIgnoreCase(command)) {
+                String topic = RedisMessageHelper.extractString(request.children().get(1));
+                ctx.writeAndFlush(RedisMessageHelper.array(
+                        RedisMessageHelper.bulkString("subscribe"),
+                        RedisMessageHelper.bulkString(topic),
+                        RedisMessageHelper.integer(1)));
+                ctx.writeAndFlush(RedisMessageHelper.array(
+                        RedisMessageHelper.bulkString("message"),
+                        RedisMessageHelper.bulkString(topic),
+                        RedisMessageHelper.bulkString("created")));
+                return;
+            }
+            if ("UNSUBSCRIBE".equalsIgnoreCase(command)) {
+                String topic = RedisMessageHelper.extractString(request.children().get(1));
+                ctx.writeAndFlush(RedisMessageHelper.array(
+                        RedisMessageHelper.bulkString("unsubscribe"),
+                        RedisMessageHelper.bulkString(topic),
+                        RedisMessageHelper.integer(0)));
+                return;
+            }
+            if ("PUBLISH".equalsIgnoreCase(command)) {
+                ctx.writeAndFlush(RedisMessageHelper.integer(1));
                 return;
             }
             String value = RedisMessageHelper.extractString(request.children().get(1));

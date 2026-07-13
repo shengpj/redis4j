@@ -34,25 +34,32 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.function.Consumer;
 
 /** Redis client based on Netty's RESP codec. */
 public class RedisClient {
     private static final Logger logger = LoggerFactory.getLogger(RedisClient.class);
     private static final long COMMAND_TIMEOUT_SECONDS = 30;
+    private static final int MAX_PENDING_PUBSUB_CALLBACKS = 1024;
 
     private final String host;
     private final int port;
     private final Queue<PendingRequest> pendingRequests = new ConcurrentLinkedQueue<>();
     private final Set<PendingRequest> outstandingRequests = ConcurrentHashMap.newKeySet();
+    private final Set<String> subscriptions = ConcurrentHashMap.newKeySet();
 
     private volatile EventLoopGroup group;
     private volatile Channel channel;
     private volatile boolean connected;
+    private volatile Consumer<PubSubMessage> pubSubListener;
+    private volatile ExecutorService pubSubCallbackExecutor;
 
     public RedisClient(String host, int port) {
         this.host = host;
@@ -97,6 +104,15 @@ public class RedisClient {
         try {
             connectFuture.sync();
             channel = connectFuture.channel();
+            pubSubCallbackExecutor = new ThreadPoolExecutor(
+                    1, 1, 0, TimeUnit.MILLISECONDS,
+                    new LinkedBlockingQueue<>(MAX_PENDING_PUBSUB_CALLBACKS),
+                    r -> {
+                        Thread thread = new Thread(r, "redis4j-pubsub-callback");
+                        thread.setDaemon(true);
+                        return thread;
+                    },
+                    new ThreadPoolExecutor.AbortPolicy());
             connected = true;
             logger.info("Connected to Redis server at {}:{}", host, port);
         } finally {
@@ -125,6 +141,7 @@ public class RedisClient {
         channel = null;
         group = null;
         failPending(new ClosedChannelException());
+        clearPubSubState();
 
         if (currentChannel != null) {
             if (currentChannel.eventLoop().inEventLoop()) {
@@ -184,6 +201,10 @@ public class RedisClient {
 
     public CompletableFuture<RedisMessage> sendCommandFuture(String... args) {
         Channel currentChannel = requireActiveChannel();
+        if (!subscriptions.isEmpty() && !allowedWhileSubscribed(args)) {
+            throw new IllegalStateException(
+                    "Only SUBSCRIBE, UNSUBSCRIBE and PING are allowed while this connection is subscribed");
+        }
         RedisMessage request = buildArrayMessage(args);
         PendingRequest pending = new PendingRequest();
         outstandingRequests.add(pending);
@@ -226,6 +247,46 @@ public class RedisClient {
             pending.future.completeExceptionally(e);
         }
         return pending.future;
+    }
+
+    public synchronized int subscribe(Consumer<PubSubMessage> listener, String... channels)
+            throws InterruptedException {
+        if (listener == null) throw new IllegalArgumentException("listener must not be null");
+        if (channels == null || channels.length == 0)
+            throw new IllegalArgumentException("at least one channel is required");
+        pubSubListener = listener;
+        int count = subscriptions.size();
+        try {
+            for (String topic : channels) {
+                if (topic == null) throw new IllegalArgumentException("channel must not be null");
+                RedisMessage response = sendCommand("SUBSCRIBE", topic);
+                count = subscriptionCount(response, "subscribe", topic);
+                subscriptions.add(topic);
+            }
+            return count;
+        } catch (InterruptedException | RuntimeException e) {
+            if (subscriptions.isEmpty()) pubSubListener = null;
+            throw e;
+        }
+    }
+
+    public synchronized int unsubscribe(String... channels) throws InterruptedException {
+        String[] topics = channels;
+        if (topics == null || topics.length == 0) {
+            topics = subscriptions.stream().sorted().toArray(String[]::new);
+        }
+        int count = subscriptions.size();
+        for (String topic : topics) {
+            RedisMessage response = sendCommand("UNSUBSCRIBE", topic);
+            count = subscriptionCount(response, "unsubscribe", topic);
+            subscriptions.remove(topic);
+        }
+        if (count == 0) pubSubListener = null;
+        return count;
+    }
+
+    public Set<String> getSubscriptions() {
+        return Set.copyOf(subscriptions);
     }
 
     private void timeoutRequest(Channel currentChannel, PendingRequest pending) {
@@ -278,6 +339,58 @@ public class RedisClient {
         pendingRequests.clear();
     }
 
+    private int subscriptionCount(RedisMessage response, String expectedKind, String expectedChannel) {
+        List<RedisMessage> values = RedisMessageHelper.extractArray(response);
+        if (values == null || values.size() != 3
+                || !expectedKind.equalsIgnoreCase(RedisMessageHelper.extractString(values.get(0)))
+                || !expectedChannel.equals(RedisMessageHelper.extractString(values.get(1)))) {
+            throw new IllegalStateException("invalid " + expectedKind + " response");
+        }
+        return Math.toIntExact(RedisMessageHelper.extractLong(values.get(2)));
+    }
+
+    private static boolean allowedWhileSubscribed(String[] args) {
+        if (args == null || args.length == 0 || args[0] == null) return false;
+        return "SUBSCRIBE".equalsIgnoreCase(args[0])
+                || "UNSUBSCRIBE".equalsIgnoreCase(args[0])
+                || "PING".equalsIgnoreCase(args[0]);
+    }
+
+    private PubSubMessage pubSubMessage(RedisMessage response) {
+        List<RedisMessage> values = RedisMessageHelper.extractArray(response);
+        if (values == null || values.size() != 3
+                || !"message".equalsIgnoreCase(RedisMessageHelper.extractString(values.get(0)))) return null;
+        return new PubSubMessage(RedisMessageHelper.extractString(values.get(1)),
+                RedisMessageHelper.extractString(values.get(2)));
+    }
+
+    private void dispatchPubSubMessage(PubSubMessage message) {
+        Consumer<PubSubMessage> listener = pubSubListener;
+        ExecutorService executor = pubSubCallbackExecutor;
+        if (listener == null || executor == null) return;
+        try {
+            executor.execute(() -> {
+                try {
+                    listener.accept(message);
+                } catch (RuntimeException e) {
+                    logger.warn("Pub/sub listener failed", e);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            logger.warn("Pub/sub callback queue is full; closing subscription connection");
+            Channel currentChannel = channel;
+            if (currentChannel != null) currentChannel.close();
+        }
+    }
+
+    private void clearPubSubState() {
+        subscriptions.clear();
+        pubSubListener = null;
+        ExecutorService executor = pubSubCallbackExecutor;
+        pubSubCallbackExecutor = null;
+        if (executor != null) executor.shutdownNow();
+    }
+
     private static String safeMessage(Throwable error) {
         String message = error.getMessage();
         return message == null || message.isBlank() ? error.getClass().getSimpleName() : message;
@@ -308,6 +421,11 @@ public class RedisClient {
             if (channel != ctx.channel()) {
                 return;
             }
+            PubSubMessage pubSubMessage = pubSubMessage(msg);
+            if (pubSubMessage != null) {
+                dispatchPubSubMessage(pubSubMessage);
+                return;
+            }
             completeNext(RedisMessageUtil.deepCopy(msg));
         }
 
@@ -317,6 +435,7 @@ public class RedisClient {
                 connected = false;
                 channel = null;
                 failPending(new ClosedChannelException());
+                clearPubSubState();
                 logger.info("Disconnected from Redis server");
             }
             super.channelInactive(ctx);
@@ -341,4 +460,6 @@ public class RedisClient {
             }
         }
     }
+
+    public record PubSubMessage(String channel, String payload) {}
 }

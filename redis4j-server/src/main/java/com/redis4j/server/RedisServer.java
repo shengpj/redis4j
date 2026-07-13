@@ -47,6 +47,7 @@ public class RedisServer {
     private final CommandRegistry commandRegistry;
     private final PersistenceManager persistenceManager;
     private final AofManager aofManager;
+    private final PubSubBroker pubSubBroker = new PubSubBroker();
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -142,7 +143,7 @@ public class RedisServer {
                         pipeline.addLast(new RedisMessageAggregator(config.getMaxArrayLength()));
                         pipeline.addLast(new RedisEncoder());
                         pipeline.addLast(new FlushConsolidationHandler(256, true));
-                        pipeline.addLast(new NettyCodecHandler(commandRegistry, commandExecutor,
+                        pipeline.addLast(new NettyCodecHandler(commandRegistry, commandExecutor, pubSubBroker,
                                 config.getMaxPendingCommandsPerConnection()));
                     }
                 });

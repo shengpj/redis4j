@@ -117,6 +117,9 @@ java -cp target/redis4j-1.0.0-SNAPSHOT.jar com.redis4j.Redis4J client -h localho
 - ZRANGE, ZREVRANGE, ZRANK, ZREVRANK
 - ZCOUNT, ZRANGEBYSCORE, ZSCAN
 
+### Pub/Sub Commands
+- PUBLISH, SUBSCRIBE, UNSUBSCRIBE
+
 ## Architecture
 
 ```

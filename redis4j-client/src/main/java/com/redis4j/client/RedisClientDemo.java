@@ -340,6 +340,17 @@ public class RedisClientDemo {
                 if (args.length < 1) throw new IllegalArgumentException("INFO requires a section");
                 yield commands.info(args[0]);
             }
+            case "PUBLISH" -> {
+                if (args.length != 2) throw new IllegalArgumentException("wrong number of arguments");
+                yield String.valueOf(commands.publish(args[0], args[1]));
+            }
+            case "SUBSCRIBE" -> {
+                if (args.length == 0) throw new IllegalArgumentException("wrong number of arguments");
+                int count = commands.subscribe(message -> System.out.println(
+                        "\nmessage " + message.channel() + " \"" + message.payload() + "\""), args);
+                yield "subscribed channels: " + count;
+            }
+            case "UNSUBSCRIBE" -> "subscribed channels: " + commands.unsubscribe(args);
             case "SAVE" -> {
                 commands.save();
                 yield "OK";
@@ -422,6 +433,7 @@ public class RedisClientDemo {
               Set:     SADD, SREM, SMEMBERS, SISMEMBER, SCARD, SSCAN
               ZSet:    ZADD, ZREM, ZSCORE, ZCARD, ZINCRBY, ZRANGE, ZREVRANGE, ZRANK, ZREVRANK, ZCOUNT, ZRANGEBYSCORE, ZSCAN
               Server:  SELECT, ECHO, INFO MEMORY, SAVE, BGSAVE, LASTSAVE, TIME
+              Pub/Sub: PUBLISH, SUBSCRIBE, UNSUBSCRIBE
               Other:   exit, quit, help
             """);
     }

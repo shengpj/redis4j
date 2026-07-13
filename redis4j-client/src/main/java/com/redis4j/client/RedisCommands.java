@@ -400,6 +400,19 @@ public class RedisCommands {
         return getString(response);
     }
 
+    public long publish(String channel, String message) throws InterruptedException {
+        return getInteger(client.sendCommand("PUBLISH", channel, message));
+    }
+
+    public int subscribe(java.util.function.Consumer<RedisClient.PubSubMessage> listener, String... channels)
+            throws InterruptedException {
+        return client.subscribe(listener, channels);
+    }
+
+    public int unsubscribe(String... channels) throws InterruptedException {
+        return client.unsubscribe(channels);
+    }
+
     public ScanResult scan(String cursor, String... options) throws InterruptedException {
         return scanCommand("SCAN", null, cursor, options);
     }
