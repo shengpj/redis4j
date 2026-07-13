@@ -2,6 +2,7 @@ package com.redis4j.persistence.aof;
 
 import com.redis4j.command.CommandJournal;
 import com.redis4j.command.CommandRegistry;
+import com.redis4j.command.WriteCommandSupport;
 import com.redis4j.persistence.RDBReader;
 import com.redis4j.persistence.RDBWriter;
 import com.redis4j.protocol.response.CommandResponse;
@@ -45,13 +46,6 @@ public final class AofManager implements CommandJournal, AutoCloseable {
     private static final byte[] HYBRID_MAGIC = "R4JHYBRD".getBytes(StandardCharsets.US_ASCII);
     private static final int HYBRID_VERSION = 1;
     private static final int HYBRID_HEADER_SIZE = HYBRID_MAGIC.length + Integer.BYTES + Long.BYTES;
-    private static final Set<String> WRITE_COMMANDS = Set.of(
-            "SET", "SETNX", "SETEX", "MSET", "INCR", "INCRBY", "DECR", "DECRBY", "APPEND",
-            "DEL", "EXPIRE", "EXPIREAT", "PEXPIREAT", "PERSIST", "RENAME", "FLUSHDB", "FLUSHALL",
-            "LPUSH", "RPUSH", "LPOP", "RPOP", "LSET", "LTRIM",
-            "HSET", "HSETNX", "HDEL", "HMSET", "HINCRBY",
-            "SADD", "SREM", "SMOVE", "SPOP");
-
     private final Path path;
     private final AofFlushPolicy flushPolicy;
     private final ArrayBlockingQueue<AppendTask> queue;
@@ -94,12 +88,22 @@ public final class AofManager implements CommandJournal, AutoCloseable {
 
     @Override
     public boolean isWriteCommand(String commandName) {
-        return WRITE_COMMANDS.contains(commandName.toUpperCase());
+        return WriteCommandSupport.isWriteCommand(commandName);
     }
 
     @Override
     public CompletableFuture<Void> append(String commandName, String[] args, CommandResponse response) throws IOException {
         List<AofCommand> commands = canonicalize(commandName, args, response, System.currentTimeMillis());
+        return commands.isEmpty() ? CompletableFuture.completedFuture(null) : enqueueCommands(commands, false);
+    }
+
+    @Override
+    public CompletableFuture<Void> appendWithEvictions(String commandName, String[] args,
+                                                        CommandResponse response, List<String> evictedKeys)
+            throws IOException {
+        List<AofCommand> commands = new ArrayList<>(canonicalize(commandName, args, response,
+                System.currentTimeMillis()));
+        if (!evictedKeys.isEmpty()) commands.add(new AofCommand("DEL", evictedKeys.toArray(new String[0])));
         return commands.isEmpty() ? CompletableFuture.completedFuture(null) : enqueueCommands(commands, false);
     }
 

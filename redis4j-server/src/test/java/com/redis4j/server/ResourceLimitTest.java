@@ -5,6 +5,7 @@ import io.netty.handler.codec.TooLongFrameException;
 import io.netty.handler.codec.redis.BulkStringHeaderRedisMessage;
 import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.Test;
+import com.redis4j.storage.memory.EvictionPolicy;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -29,6 +30,8 @@ class ResourceLimitTest {
     void validatesResourceLimits() {
         ServerConfig config = new ServerConfig();
         assertTrue(config.isAofUseRdbPreamble());
+        assertEquals(0, config.getMaxMemoryBytes());
+        assertEquals(EvictionPolicy.NOEVICTION, config.getMaxMemoryPolicy());
         assertThrows(IllegalArgumentException.class, () -> config.setMaxFrameLength(0));
         assertThrows(IllegalArgumentException.class, () -> config.setMaxArrayLength(0));
         assertThrows(IllegalArgumentException.class, () -> config.setMaxPendingCommandsPerConnection(0));
@@ -36,5 +39,8 @@ class ResourceLimitTest {
         assertThrows(IllegalArgumentException.class, () -> config.setAofQueueCapacity(0));
         assertThrows(IllegalArgumentException.class, () -> config.setAutoAofRewriteMinSize(-1));
         assertThrows(IllegalArgumentException.class, () -> config.setAutoAofRewritePercentage(-1));
+        assertThrows(IllegalArgumentException.class, () -> config.setMaxMemoryBytes(-1));
+        assertThrows(IllegalArgumentException.class, () -> config.setMaxMemoryPolicy(null));
+        assertEquals(EvictionPolicy.ALLKEYS_LRU, EvictionPolicy.parse("allkeys-lru"));
     }
 }

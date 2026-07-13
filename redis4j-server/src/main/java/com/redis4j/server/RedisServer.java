@@ -8,6 +8,8 @@ import com.redis4j.persistence.aof.AofManager;
 import com.redis4j.storage.DataStore;
 import com.redis4j.storage.DataStoreFactory;
 import com.redis4j.storage.StorageType;
+import com.redis4j.storage.memory.EvictionPolicy;
+import com.redis4j.storage.memory.MemoryLimitManager;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.*;
@@ -30,6 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Locale;
 
 /**
  * Redis 服务端主类
@@ -60,6 +63,8 @@ public class RedisServer {
         this.config = config;
         this.dataStore = DataStoreFactory.create(config.getDataStoreType(), config.getPartitions());
         this.commandRegistry = new CommandRegistry(dataStore);
+        this.commandRegistry.setMemoryLimitManager(new MemoryLimitManager(dataStore,
+                config.getMaxMemoryBytes(), config.getMaxMemoryPolicy()));
         this.persistenceManager = new PersistenceManager(dataStore, config.getDataDir());
         this.aofManager = createAofManager(config);
         logger.info("Using DataStore type: {}", config.getDataStoreType());
@@ -69,6 +74,8 @@ public class RedisServer {
         this.config = config;
         this.dataStore = dataStore;
         this.commandRegistry = commandRegistry;
+        this.commandRegistry.setMemoryLimitManager(new MemoryLimitManager(dataStore,
+                config.getMaxMemoryBytes(), config.getMaxMemoryPolicy()));
         this.persistenceManager = new PersistenceManager(dataStore, config.getDataDir());
         this.aofManager = createAofManager(config);
     }
@@ -77,6 +84,8 @@ public class RedisServer {
      * 启动服务器
      */
     public void start() throws InterruptedException {
+        logger.info("Effective Redis4J server configuration: {}, aofPath={}",
+                config, aofManager == null ? "disabled" : aofManager.getPath());
         logger.info("Starting Redis4J server on {}:{}", config.getHost(), config.getPort());
 
         initializePersistence();
@@ -104,6 +113,7 @@ public class RedisServer {
         commandRegistry.register(new ServerCommands.SaveCommand(persistenceManager));
         commandRegistry.register(new ServerCommands.BgSaveCommand(persistenceManager));
         commandRegistry.register(new ServerCommands.LastSaveCommand(persistenceManager));
+        commandRegistry.register(new ServerCommands.InfoCommand(dataStore, config));
         if (aofManager != null) {
             commandRegistry.register(new ServerCommands.BgRewriteAofCommand(aofManager, commandRegistry, dataStore));
         }
@@ -251,6 +261,12 @@ public class RedisServer {
                 case "--aof-use-rdb-preamble" -> {
                     if (i + 1 < args.length) config.setAofUseRdbPreamble(Boolean.parseBoolean(args[++i]));
                 }
+                case "--maxmemory" -> {
+                    if (i + 1 < args.length) config.setMaxMemoryBytes(parseMemorySize(args[++i]));
+                }
+                case "--maxmemory-policy" -> {
+                    if (i + 1 < args.length) config.setMaxMemoryPolicy(EvictionPolicy.parse(args[++i]));
+                }
                 case "--store", "--datastore" -> {
                     if (i + 1 < args.length) {
                         String type = args[++i].toUpperCase();
@@ -319,5 +335,21 @@ public class RedisServer {
                 aofManager.bgRewrite(commandRegistry, dataStore);
             }
         }, 5, 5, TimeUnit.SECONDS);
+    }
+
+    private static long parseMemorySize(String value) {
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        long multiplier = 1;
+        if (normalized.endsWith("kb")) {
+            multiplier = 1024L;
+            normalized = normalized.substring(0, normalized.length() - 2);
+        } else if (normalized.endsWith("mb")) {
+            multiplier = 1024L * 1024;
+            normalized = normalized.substring(0, normalized.length() - 2);
+        } else if (normalized.endsWith("gb")) {
+            multiplier = 1024L * 1024 * 1024;
+            normalized = normalized.substring(0, normalized.length() - 2);
+        }
+        return Math.multiplyExact(Long.parseLong(normalized), multiplier);
     }
 }

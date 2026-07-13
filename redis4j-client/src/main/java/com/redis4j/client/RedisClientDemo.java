@@ -263,7 +263,10 @@ public class RedisClientDemo {
                 yield String.valueOf(commands.expireAt(args[0], Long.parseLong(args[1])));
             }
             case "PTTL" -> String.valueOf(commands.pttl(args[0]));
-            case "INFO" -> "Redis4J 1.0.0";
+            case "INFO" -> {
+                if (args.length < 1) throw new IllegalArgumentException("INFO requires a section");
+                yield commands.info(args[0]);
+            }
             case "SAVE" -> {
                 commands.save();
                 yield "OK";
@@ -324,7 +327,7 @@ public class RedisClientDemo {
               List:    LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN
               Hash:    HSET, HSETNX, HGET, HGETALL, HDEL, HEXISTS, HLEN
               Set:     SADD, SREM, SMEMBERS, SISMEMBER, SCARD
-              Server:  SELECT, ECHO, INFO, SAVE, BGSAVE, LASTSAVE, TIME
+              Server:  SELECT, ECHO, INFO MEMORY, SAVE, BGSAVE, LASTSAVE, TIME
               Other:   exit, quit, help
             """);
     }

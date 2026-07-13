@@ -5,6 +5,10 @@ import com.redis4j.storage.expiration.ExpirationPolicy;
 import com.redis4j.storage.expiration.IndexedExpirationPolicy;
 import com.redis4j.storage.repository.ConcurrentMapEntryRepository;
 import com.redis4j.storage.repository.EntryRepository;
+import com.redis4j.storage.memory.EvictionPlan;
+import com.redis4j.storage.memory.EvictionPolicy;
+import com.redis4j.storage.memory.MemoryManagedStore;
+import com.redis4j.storage.snapshot.SnapshotEntry;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -18,12 +22,13 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * 每个分区有独立的 ConcurrentHashMap，分区选择基于 key 的 hash 值
  */
-public class PartitionedMemoryStore implements DataStore {
+public class PartitionedMemoryStore implements DataStore, MemoryManagedStore {
 
     private static final int DEFAULT_PARTITIONS;
     private final Partition[] partitions;
     private final int numPartitions;
     private final ScheduledExecutorService scheduler;
+    private final ConcurrentMap<String, Long> accessTimes = new ConcurrentHashMap<>();
 
     static {
         DEFAULT_PARTITIONS = Runtime.getRuntime().availableProcessors();
@@ -105,6 +110,7 @@ public class PartitionedMemoryStore implements DataStore {
         if (entry == null || entry.isExpired()) {
             p.store.remove(key, entry);
             p.expiryIndex.remove(key);
+            accessTimes.remove(key);
             return null;
         }
         RedisValue value = entry.getValue();
@@ -200,6 +206,7 @@ public class PartitionedMemoryStore implements DataStore {
             if (p.store.remove(key) != null) {
                 count++;
                 p.expiryIndex.remove(key);
+                accessTimes.remove(key);
             }
         }
         return count;
@@ -212,6 +219,7 @@ public class PartitionedMemoryStore implements DataStore {
         if (entry == null || entry.isExpired()) {
             p.store.remove(key, entry);
             p.expiryIndex.remove(key);
+            accessTimes.remove(key);
             return false;
         }
         return true;
@@ -260,6 +268,7 @@ public class PartitionedMemoryStore implements DataStore {
         if (entry == null || entry.isExpired()) {
             p.store.remove(key, entry);
             p.expiryIndex.remove(key);
+            accessTimes.remove(key);
             return -2;
         }
         if (entry.isPersistent()) {
@@ -269,6 +278,7 @@ public class PartitionedMemoryStore implements DataStore {
         if (remaining <= 0) {
             p.store.remove(key, entry);
             p.expiryIndex.remove(key);
+            accessTimes.remove(key);
             return -2;
         }
         return remaining;
@@ -299,6 +309,7 @@ public class PartitionedMemoryStore implements DataStore {
             if (entry == null || entry.isExpired()) {
                 if (entry != null) source.store.remove(key, entry);
                 source.expiryIndex.remove(key);
+                accessTimes.remove(key);
                 return;
             }
             destination.store.put(newKey, entry);
@@ -748,6 +759,7 @@ public class PartitionedMemoryStore implements DataStore {
             p.store.clear();
             p.expiryIndex.clear();
         }
+        accessTimes.clear();
     }
 
     @Override
@@ -769,6 +781,7 @@ public class PartitionedMemoryStore implements DataStore {
             p.store.clear();
             p.expiryIndex.clear();
         }
+        accessTimes.clear();
     }
 
     @Override
@@ -780,6 +793,160 @@ public class PartitionedMemoryStore implements DataStore {
         }
         return keys;
     }
+
+    @Override
+    public long estimatedMemoryUsage() {
+        cleanupExpiredKeys();
+        long total = 0;
+        Set<String> liveKeys = new HashSet<>();
+        for (Partition partition : partitions) {
+            for (String key : partition.store.keySet()) {
+                Entry entry = partition.store.get(key);
+                if (entry == null || entry.isExpired()) continue;
+                liveKeys.add(key);
+                total = saturatedAdd(total, estimateEntryBytes(key, entry));
+            }
+        }
+        accessTimes.keySet().retainAll(liveKeys);
+        return total;
+    }
+
+    @Override
+    public Map<String, SnapshotEntry> captureKeys(Set<String> keys) {
+        Map<String, SnapshotEntry> captured = new HashMap<>();
+        for (String key : keys) {
+            Partition partition = getPartition(key);
+            Entry entry = partition.store.get(key);
+            if (entry != null && !entry.isExpired()) captured.put(key, snapshotEntry(key, entry));
+        }
+        return captured;
+    }
+
+    @Override
+    public void restoreKeys(Set<String> keys, Map<String, SnapshotEntry> captured) {
+        del(keys.toArray(new String[0]));
+        for (SnapshotEntry snapshot : captured.values()) restoreEntry(snapshot);
+    }
+
+    @Override
+    public void recordAccess(Set<String> keys) {
+        long access = System.nanoTime();
+        for (String key : keys) {
+            Partition partition = getPartition(key);
+            Entry entry = partition.store.get(key);
+            if (entry != null && !entry.isExpired()) accessTimes.put(key, access);
+        }
+    }
+
+    @Override
+    public EvictionPlan planEvictions(long maximumBytes, EvictionPolicy policy) {
+        long current = estimatedMemoryUsage();
+        if (current <= maximumBytes) return new EvictionPlan(true, List.of());
+        if (policy == EvictionPolicy.NOEVICTION) return new EvictionPlan(false, List.of());
+
+        List<EvictionCandidate> candidates = new ArrayList<>();
+        for (Partition partition : partitions) {
+            for (String key : partition.store.keySet()) {
+                Entry entry = partition.store.get(key);
+                if (entry == null || entry.isExpired() || !eligible(entry, policy)) continue;
+                candidates.add(new EvictionCandidate(key, estimateEntryBytes(key, entry),
+                        accessTimes.getOrDefault(key, Long.MIN_VALUE), entry.getExpireAt()));
+            }
+        }
+        switch (policy) {
+            case ALLKEYS_RANDOM, VOLATILE_RANDOM -> Collections.shuffle(candidates, ThreadLocalRandom.current());
+            case ALLKEYS_LRU, VOLATILE_LRU -> candidates.sort(Comparator.comparingLong(EvictionCandidate::lastAccess));
+            case VOLATILE_TTL -> candidates.sort(Comparator.comparingLong(EvictionCandidate::expireAt));
+            default -> { }
+        }
+
+        List<String> selected = new ArrayList<>();
+        long remaining = current;
+        for (EvictionCandidate candidate : candidates) {
+            selected.add(candidate.key());
+            remaining = Math.max(0, remaining - candidate.bytes());
+            if (remaining <= maximumBytes) return new EvictionPlan(true, selected);
+        }
+        return new EvictionPlan(false, List.of());
+    }
+
+    private static boolean eligible(Entry entry, EvictionPolicy policy) {
+        return switch (policy) {
+            case VOLATILE_LRU, VOLATILE_RANDOM, VOLATILE_TTL -> !entry.isPersistent();
+            default -> true;
+        };
+    }
+
+    private SnapshotEntry snapshotEntry(String key, Entry entry) {
+        RedisValue value = entry.getValue();
+        Object copied = switch (value.getType()) {
+            case STRING -> ((RedisString) value).getStringValue();
+            case LIST -> List.copyOf(((RedisList) value).getList());
+            case SET -> new HashSet<>(((RedisSet) value).getSet());
+            case HASH -> new LinkedHashMap<>(((RedisHash) value).getHash());
+            default -> throw new IllegalStateException("Unsupported value type: " + value.getType());
+        };
+        return new SnapshotEntry(key, value.getType(), copied, entry.getExpireAt());
+    }
+
+    private void restoreEntry(SnapshotEntry snapshot) {
+        if (snapshot.expireAt() > 0 && snapshot.expireAt() <= System.currentTimeMillis()) return;
+        RedisValue value = switch (snapshot.type()) {
+            case STRING -> new RedisString((String) snapshot.value());
+            case LIST -> new RedisList(new ArrayDeque<>(cast(snapshot.value())));
+            case SET -> new RedisSet(new HashSet<>(cast(snapshot.value())));
+            case HASH -> new RedisHash(new LinkedHashMap<>(cast(snapshot.value())));
+            default -> throw new IllegalStateException("Unsupported value type: " + snapshot.type());
+        };
+        Partition partition = getPartition(snapshot.key());
+        Entry restored = new Entry(value, snapshot.expireAt());
+        partition.store.put(snapshot.key(), restored);
+        updateExpiryIndex(partition, snapshot.key(), restored);
+        accessTimes.put(snapshot.key(), System.nanoTime());
+    }
+
+    private static long estimateEntryBytes(String key, Entry entry) {
+        long bytes = 72 + stringBytes(key) + (entry.isPersistent() ? 0 : 32);
+        RedisValue value = entry.getValue();
+        bytes = saturatedAdd(bytes, switch (value.getType()) {
+            case STRING -> 40 + stringBytes(((RedisString) value).getStringValue());
+            case LIST -> collectionBytes(((RedisList) value).getList(), 48);
+            case SET -> collectionBytes(((RedisSet) value).getSet(), 64);
+            case HASH -> hashBytes(((RedisHash) value).getHash());
+            default -> 0;
+        });
+        return bytes;
+    }
+
+    private static long collectionBytes(Collection<String> values, long overhead) {
+        long bytes = 64;
+        for (String value : values) bytes = saturatedAdd(bytes, overhead + stringBytes(value));
+        return bytes;
+    }
+
+    private static long hashBytes(Map<String, String> values) {
+        long bytes = 64;
+        for (Map.Entry<String, String> value : values.entrySet()) {
+            bytes = saturatedAdd(bytes, 80 + stringBytes(value.getKey()) + stringBytes(value.getValue()));
+        }
+        return bytes;
+    }
+
+    private static long stringBytes(String value) {
+        return value == null ? 0 : 40L + (long) value.length() * Character.BYTES;
+    }
+
+    private static long saturatedAdd(long left, long right) {
+        if (right > 0 && left > Long.MAX_VALUE - right) return Long.MAX_VALUE;
+        return left + right;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> T cast(Object value) {
+        return (T) value;
+    }
+
+    private record EvictionCandidate(String key, long bytes, long lastAccess, long expireAt) {}
 
     // ==================== 内部方法 ====================
 
@@ -795,6 +962,7 @@ public class PartitionedMemoryStore implements DataStore {
                     if (current != null && current.getExpireAt() == expireAt && current.isExpired()
                             && p.store.remove(key, current)) {
                         p.expiryIndex.remove(key, expireAt);
+                        accessTimes.remove(key);
                     } else if (current == null || current.getExpireAt() != expireAt) {
                         p.expiryIndex.remove(key, expireAt);
                     }
@@ -806,6 +974,7 @@ public class PartitionedMemoryStore implements DataStore {
     private void updateExpiryIndex(Partition partition, String key, Entry entry) {
         if (entry == null || entry.isPersistent()) {
             partition.expiryIndex.remove(key);
+            if (entry == null) accessTimes.remove(key);
         } else {
             partition.expiryIndex.put(key, entry.getExpireAt());
         }

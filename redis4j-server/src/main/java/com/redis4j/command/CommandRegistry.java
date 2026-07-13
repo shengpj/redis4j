@@ -4,12 +4,14 @@ import com.redis4j.command.impl.*;
 import com.redis4j.protocol.response.CommandResponse;
 import com.redis4j.protocol.response.CommandResponses;
 import com.redis4j.storage.DataStore;
+import com.redis4j.storage.memory.MemoryLimitManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Callable;
@@ -25,6 +27,7 @@ public class CommandRegistry {
     private final DataStore dataStore;
     private final Object writeCommandLock = new Object();
     private volatile CommandJournal commandJournal;
+    private volatile MemoryLimitManager memoryLimitManager;
 
     public CommandRegistry(DataStore dataStore) {
         this.commands = new HashMap<>();
@@ -51,15 +54,32 @@ public class CommandRegistry {
      */
     public CommandResponse execute(String commandName, String[] args) {
         CommandJournal journal = commandJournal;
-        if (journal != null && journal.isWriteCommand(commandName)) {
+        MemoryLimitManager memoryManager = memoryLimitManager;
+        boolean writeCommand = journal != null && journal.isWriteCommand(commandName)
+                || memoryManager != null && memoryManager.isEnabled()
+                && WriteCommandSupport.isWriteCommand(commandName);
+        if (writeCommand) {
             CommandResponse response;
             CompletableFuture<Void> journalCompletion = null;
+            List<String> evictedKeys = List.of();
             // 锁内完成数据修改和按序入队；磁盘等待移到锁外，使单写线程能够聚合多个连接的记录。
             synchronized (writeCommandLock) {
+                MemoryLimitManager.WriteBackup backup = memoryManager == null
+                        ? null : memoryManager.capture(commandName, args);
                 response = executeCommand(commandName, args);
                 if (!(response instanceof CommandResponse.Error)) {
+                    if (memoryManager != null) {
+                        memoryManager.recordAccess(commandName, args);
+                        MemoryLimitManager.EnforcementResult enforcement = memoryManager.enforce(commandName, backup);
+                        if (!enforcement.accepted()) {
+                            return CommandResponses.error("OOM command not allowed when used memory > 'maxmemory'");
+                        }
+                        evictedKeys = enforcement.evictedKeys();
+                    }
                     try {
-                        journalCompletion = journal.append(commandName, args, response);
+                        if (journal != null && journal.isWriteCommand(commandName)) {
+                            journalCompletion = journal.appendWithEvictions(commandName, args, response, evictedKeys);
+                        }
                     } catch (Exception e) {
                         logger.error("Failed to append command to journal: {}", commandName, e);
                         return CommandResponses.error("MISCONF AOF persistence failed: " + e.getMessage());
@@ -79,7 +99,9 @@ public class CommandRegistry {
             }
             return response;
         }
-        return executeCommand(commandName, args);
+        CommandResponse response = executeCommand(commandName, args);
+        if (memoryManager != null) memoryManager.recordAccess(commandName, args);
+        return response;
     }
 
     /** AOF 启动恢复专用入口，重放时不能再次写入 AOF。 */
@@ -104,6 +126,12 @@ public class CommandRegistry {
     public void setCommandJournal(CommandJournal commandJournal) {
         synchronized (writeCommandLock) {
             this.commandJournal = commandJournal;
+        }
+    }
+
+    public void setMemoryLimitManager(MemoryLimitManager memoryLimitManager) {
+        synchronized (writeCommandLock) {
+            this.memoryLimitManager = memoryLimitManager;
         }
     }
 

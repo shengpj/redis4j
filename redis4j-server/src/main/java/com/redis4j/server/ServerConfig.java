@@ -2,6 +2,7 @@ package com.redis4j.server;
 
 import com.redis4j.storage.StorageType;
 import com.redis4j.persistence.aof.AofFlushPolicy;
+import com.redis4j.storage.memory.EvictionPolicy;
 
 /**
  * Redis 服务端配置
@@ -25,6 +26,8 @@ public class ServerConfig {
     private boolean aofUseRdbPreamble = true;
     private long autoAofRewriteMinSize = 64L * 1024 * 1024;
     private int autoAofRewritePercentage = 100;
+    private long maxMemoryBytes;
+    private EvictionPolicy maxMemoryPolicy = EvictionPolicy.NOEVICTION;
     private boolean daemon = false;
     private StorageType dataStoreType = StorageType.PARTITIONED;
 
@@ -190,6 +193,24 @@ public class ServerConfig {
         this.autoAofRewritePercentage = autoAofRewritePercentage;
     }
 
+    public long getMaxMemoryBytes() {
+        return maxMemoryBytes;
+    }
+
+    public void setMaxMemoryBytes(long maxMemoryBytes) {
+        if (maxMemoryBytes < 0) throw new IllegalArgumentException("maxMemoryBytes cannot be negative");
+        this.maxMemoryBytes = maxMemoryBytes;
+    }
+
+    public EvictionPolicy getMaxMemoryPolicy() {
+        return maxMemoryPolicy;
+    }
+
+    public void setMaxMemoryPolicy(EvictionPolicy maxMemoryPolicy) {
+        if (maxMemoryPolicy == null) throw new IllegalArgumentException("maxMemoryPolicy is required");
+        this.maxMemoryPolicy = maxMemoryPolicy;
+    }
+
     public boolean isDaemon() {
         return daemon;
     }
@@ -218,6 +239,8 @@ public class ServerConfig {
                 ", aofUseRdbPreamble=" + aofUseRdbPreamble +
                 ", autoAofRewriteMinSize=" + autoAofRewriteMinSize +
                 ", autoAofRewritePercentage=" + autoAofRewritePercentage +
+                ", maxMemoryBytes=" + maxMemoryBytes +
+                ", maxMemoryPolicy=" + maxMemoryPolicy +
                 ", daemon=" + daemon +
                 '}';
     }

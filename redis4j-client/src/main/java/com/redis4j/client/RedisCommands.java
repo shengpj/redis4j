@@ -315,6 +315,11 @@ public class RedisCommands {
         return getInteger(response);
     }
 
+    public String info(String section) throws InterruptedException {
+        RedisMessage response = client.sendCommand("INFO", section);
+        return getString(response);
+    }
+
     // ==================== 辅助方法 ====================
 
     private String getString(RedisMessage response) {

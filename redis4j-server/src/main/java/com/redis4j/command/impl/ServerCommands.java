@@ -7,12 +7,65 @@ import com.redis4j.persistence.aof.AofManager;
 import com.redis4j.protocol.response.CommandResponses;
 import com.redis4j.protocol.response.CommandResponse;
 import com.redis4j.command.CommandRegistry;
+import com.redis4j.server.ServerConfig;
+import com.redis4j.storage.DataStore;
+import com.redis4j.storage.memory.MemoryManagedStore;
 import com.redis4j.storage.snapshot.SnapshotProvider;
+
+import java.util.Locale;
 
 /**
  * 服务器控制命令实现
  */
 public class ServerCommands {
+
+    /** INFO MEMORY - 返回内存限制模块使用的估算内存指标。 */
+    public static class InfoCommand extends AbstractCommand {
+        private final DataStore dataStore;
+        private final ServerConfig config;
+
+        public InfoCommand(DataStore dataStore, ServerConfig config) {
+            this.dataStore = dataStore;
+            this.config = config;
+        }
+
+        @Override
+        public String getName() {
+            return "INFO";
+        }
+
+        @Override
+        public int getArity() {
+            return 2;
+        }
+
+        @Override
+        protected CommandResponse doExecute(String[] args) {
+            if (!"MEMORY".equalsIgnoreCase(args[0])) {
+                return CommandResponses.error("ERR unsupported INFO section '" + args[0] + "'");
+            }
+            long usedMemory = dataStore instanceof MemoryManagedStore store
+                    ? store.estimatedMemoryUsage() : 0;
+            long maximumMemory = config.getMaxMemoryBytes();
+            String info = "# Memory\r\n"
+                    + "used_memory:" + usedMemory + "\r\n"
+                    + "used_memory_human:" + humanBytes(usedMemory) + "\r\n"
+                    + "used_memory_estimated:1\r\n"
+                    + "maxmemory:" + maximumMemory + "\r\n"
+                    + "maxmemory_human:" + humanBytes(maximumMemory) + "\r\n"
+                    + "maxmemory_policy:" + config.getMaxMemoryPolicy().name().toLowerCase(Locale.ROOT)
+                            .replace('_', '-') + "\r\n"
+                    + "db0_keys:" + dataStore.dbSize() + "\r\n";
+            return CommandResponses.bulkString(info);
+        }
+
+        private static String humanBytes(long bytes) {
+            if (bytes < 1024) return bytes + "B";
+            if (bytes < 1024L * 1024) return String.format(Locale.ROOT, "%.2fK", bytes / 1024.0);
+            if (bytes < 1024L * 1024 * 1024) return String.format(Locale.ROOT, "%.2fM", bytes / (1024.0 * 1024));
+            return String.format(Locale.ROOT, "%.2fG", bytes / (1024.0 * 1024 * 1024));
+        }
+    }
 
     /** BGREWRITEAOF - 后台生成紧凑 AOF 文件。 */
     public static class BgRewriteAofCommand extends AbstractCommand {

@@ -54,6 +54,20 @@ tail. Existing pure AOF files remain supported. Use
 `--aof-use-rdb-preamble false` or
 `ServerConfig.setAofUseRdbPreamble(false)` to keep pure-AOF rewrites.
 
+Limit the approximate memory used by keys and values with `--maxmemory`. Size
+suffixes `kb`, `mb`, and `gb` are supported. The default value is `0` (unlimited):
+
+```bash
+java -jar redis4j-server/target/redis4j-server-1.0.0-SNAPSHOT.jar \
+  --maxmemory 256mb --maxmemory-policy allkeys-lru
+```
+
+Supported policies are `noeviction`, `allkeys-lru`, `allkeys-random`,
+`volatile-lru`, `volatile-random`, and `volatile-ttl`. Volatile policies only
+evict keys with an expiry. If a policy cannot free enough memory, the write is
+rolled back and returns an OOM error. Eviction deletes are included in AOF so
+evicted keys do not reappear after restart.
+
 ## Run Client
 
 ```bash
